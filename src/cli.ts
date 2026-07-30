@@ -162,6 +162,12 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
       allowedRoots,
       publicBaseUrl,
       subagents: resolveSubagentsFlag(files.config),
+      serenaEnabled: files.config.serenaEnabled,
+      serenaCommand: files.config.serenaCommand,
+      serenaContext: files.config.serenaContext,
+      serenaStartupTimeoutMs: files.config.serenaStartupTimeoutMs,
+      serenaToolTimeoutMs: files.config.serenaToolTimeoutMs,
+      serenaIdleTimeoutMs: files.config.serenaIdleTimeoutMs,
     };
     const auth = {
       ownerToken: files.auth.ownerToken ?? generateOwnerToken(),
@@ -224,6 +230,11 @@ async function serve(): Promise<void> {
     }
     console.log("auth: Owner password approval required");
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
+    console.log(
+      config.serena.enabled
+        ? `serena: enabled (${config.serena.command}, context=${config.serena.context})`
+        : "serena: disabled",
+    );
     if (config.subagents) {
       console.log(`subagent providers: ${formatLocalAgentProviderAvailabilitySummary(localAgentProviders)}`);
     }
@@ -264,6 +275,11 @@ async function runDoctor(): Promise<void> {
     console.log(`Public MCP URL: ${new URL("/mcp", config.publicBaseUrl).toString()}`);
     console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
     console.log(`Allowed hosts: ${config.allowedHosts.join(", ")}`);
+    console.log(
+      config.serena.enabled
+        ? `Serena: ${checkSerenaAvailable(config.serena.command)} (context=${config.serena.context})`
+        : "Serena: disabled",
+    );
   } catch (error) {
     console.log(`Config status: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -668,6 +684,16 @@ function checkSqliteNative(): string {
     return "ok";
   } catch (error) {
     return error instanceof Error ? error.message : String(error);
+  }
+}
+
+function checkSerenaAvailable(command: string): string {
+  try {
+    const { execFileSync } = require("node:child_process") as typeof import("node:child_process");
+    return execFileSync(command, ["--version"], { encoding: "utf8" }).trim();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `unavailable (${message})`;
   }
 }
 

@@ -9,9 +9,11 @@ should call tools that read files, edit files, search code, and run shell
 commands directly against approved local project roots.
 
 Pi's SDK is currently used as the backend adapter for mature local coding
-primitives such as read, edit, write, grep, find, ls, and bash. DevSpace wraps
-those primitives behind a remote Streamable HTTP MCP interface, suitable for use
-through a Cloudflare Tunnel.
+primitives such as read, edit, write, grep, find, ls, and bash. Optional Serena
+integration adds workspace-bound LSP symbol, reference, diagnostic, and semantic
+refactoring tools without duplicating file or shell primitives. DevSpace wraps
+these capabilities behind a remote Streamable HTTP MCP interface, suitable for
+use through a Cloudflare Tunnel.
 
 The model-facing workflow is workspace based. MCP clients should call
 `open_workspace` once per local project directory or worktree, then reuse the

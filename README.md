@@ -135,6 +135,7 @@ DevSpace gives ChatGPT tools to:
 
 - read, write, and edit files inside the opened workspace
 - search code and inspect directories
+- use optional Serena/LSP tools for symbols, references, diagnostics, and semantic refactors
 - run shell commands for tests, builds, git, and package scripts
 - use isolated Git worktrees for parallel coding sessions
 - follow project instructions from `AGENTS.md` and `CLAUDE.md`
@@ -174,6 +175,20 @@ Run this to inspect your local setup:
 ```bash
 devspace doctor
 ```
+
+### Optional Serena integration
+
+Install and initialize Serena, then enable it in DevSpace:
+
+```bash
+uv tool install -p 3.13 serena-agent
+serena init
+DEVSPACE_SERENA=1 devspace serve
+```
+
+DevSpace starts Serena lazily per opened workspace or worktree and exposes only
+its semantic code tools. File operations, shell commands, tests, builds, and Git
+continue to use the regular DevSpace tools.
 
 ## Documentation
 

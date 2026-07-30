@@ -109,6 +109,33 @@ Codex-mode commands run without a PTY by default. Set `tty: true` on
 `node-pty` dependency; `write_stdin` can send input, poll output, and resize PTY
 sessions.
 
+## Serena Semantic Code Tools
+
+Serena integration is optional and disabled by default. When enabled, DevSpace
+starts a Serena LSP process lazily for each opened `workspaceId`. The Serena
+process is bound to the exact checkout or managed worktree represented by that
+workspace, then closed after an idle timeout or when DevSpace shuts down.
+
+DevSpace exposes Serena only for semantic code operations: symbol overviews,
+symbol lookup, references, implementations, declarations, diagnostics,
+semantic rename, whole-symbol replacement/insertion, and safe symbol deletion.
+Ordinary file reads/writes, shell commands, tests, builds, and Git remain DevSpace
+operations, so the host does not receive two competing file toolsets.
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DEVSPACE_SERENA` | `0` | Enable the `serena_*` tools. |
+| `DEVSPACE_SERENA_COMMAND` | `~/.local/bin/serena.exe` on Windows; `serena` elsewhere | Serena executable or command name. |
+| `DEVSPACE_SERENA_CONTEXT` | `codex` | Serena context used by the internal MCP process. |
+| `DEVSPACE_SERENA_STARTUP_TIMEOUT_MS` | `120000` | Maximum Serena startup time per workspace. |
+| `DEVSPACE_SERENA_TOOL_TIMEOUT_MS` | `240000` | Maximum duration of one Serena tool call. |
+| `DEVSPACE_SERENA_IDLE_TIMEOUT_MS` | `1800000` | Close an unused Serena workspace process after 30 minutes. |
+
+The same settings may be persisted in `~/.devspace/config.json` as
+`serenaEnabled`, `serenaCommand`, `serenaContext`,
+`serenaStartupTimeoutMs`, `serenaToolTimeoutMs`, and
+`serenaIdleTimeoutMs`.
+
 ## Widgets
 
 `DEVSPACE_WIDGETS` controls ChatGPT Apps iframe usage.
@@ -191,6 +218,7 @@ DEVSPACE_ALLOWED_ROOTS="$HOME/personal,$HOME/work" \
 DEVSPACE_PUBLIC_BASE_URL="https://devspace.example.com" \
 DEVSPACE_WORKTREE_ROOT="$HOME/.devspace/worktrees" \
 DEVSPACE_ARTIFACTS="1" \
+DEVSPACE_SERENA="1" \
 DEVSPACE_TOOL_MODE="minimal" \
 DEVSPACE_WIDGETS="full" \
 npx @waishnav/devspace serve
