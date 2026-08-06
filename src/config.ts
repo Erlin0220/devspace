@@ -7,16 +7,6 @@ import { devspaceAgentsDir, devspaceSkillsDir, loadDevspaceFiles } from "./user-
 
 export type ToolMode = "minimal" | "full" | "codex";
 export type WidgetMode = "off" | "changes" | "full";
-
-export interface SerenaConfig {
-  enabled: boolean;
-  command: string;
-  context: string;
-  startupTimeoutMs: number;
-  toolTimeoutMs: number;
-  idleTimeoutMs: number;
-}
-
 const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const DEFAULT_ARTIFACT_MAX_FILE_BYTES = 100 * 1024 * 1024;
@@ -40,7 +30,6 @@ export interface ServerConfig {
   devspaceAgentsDir: string;
   subagents: boolean;
   agentDir: string;
-  serena: SerenaConfig;
   logging: LoggingConfig;
 }
 
@@ -218,58 +207,6 @@ function defaultAgentDir(): string {
   return join(homedir(), ".codex");
 }
 
-function defaultSerenaCommand(): string {
-  return process.platform === "win32"
-    ? join(homedir(), ".local", "bin", "serena.exe")
-    : "serena";
-}
-
-function resolveCommand(value: string): string {
-  const expanded = expandHomePath(value);
-  return expanded.includes("/") || expanded.includes("\\")
-    ? resolve(expanded)
-    : expanded;
-}
-
-function parseSerenaConfig(
-  env: NodeJS.ProcessEnv,
-  files: ReturnType<typeof loadDevspaceFiles>,
-): SerenaConfig {
-  const enabled = env.DEVSPACE_SERENA === undefined
-    ? files.config.serenaEnabled === true
-    : parseBoolean(env.DEVSPACE_SERENA);
-
-  return {
-    enabled,
-    command: resolveCommand(
-      env.DEVSPACE_SERENA_COMMAND
-        ?? files.config.serenaCommand
-        ?? defaultSerenaCommand(),
-    ),
-    context: env.DEVSPACE_SERENA_CONTEXT
-      ?? files.config.serenaContext
-      ?? "codex",
-    startupTimeoutMs: parsePositiveInteger(
-      env.DEVSPACE_SERENA_STARTUP_TIMEOUT_MS
-        ?? numberConfigValue(files.config.serenaStartupTimeoutMs),
-      120_000,
-      "DEVSPACE_SERENA_STARTUP_TIMEOUT_MS",
-    ),
-    toolTimeoutMs: parsePositiveInteger(
-      env.DEVSPACE_SERENA_TOOL_TIMEOUT_MS
-        ?? numberConfigValue(files.config.serenaToolTimeoutMs),
-      240_000,
-      "DEVSPACE_SERENA_TOOL_TIMEOUT_MS",
-    ),
-    idleTimeoutMs: parsePositiveInteger(
-      env.DEVSPACE_SERENA_IDLE_TIMEOUT_MS
-        ?? numberConfigValue(files.config.serenaIdleTimeoutMs),
-      30 * 60 * 1_000,
-      "DEVSPACE_SERENA_IDLE_TIMEOUT_MS",
-    ),
-  };
-}
-
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const files = loadDevspaceFiles(env);
   const host = env.HOST ?? files.config.host ?? "127.0.0.1";
@@ -315,7 +252,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
         ? files.config.subagents === true
         : parseBoolean(env.DEVSPACE_SUBAGENTS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
-    serena: parseSerenaConfig(env, files),
     logging: parseLoggingConfig(env),
   };
 }

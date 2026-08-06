@@ -21,12 +21,6 @@ export interface DevspaceUserConfig {
   artifactMaxFileBytes?: number;
   agentDir?: string;
   subagents?: boolean;
-  serenaEnabled?: boolean;
-  serenaCommand?: string;
-  serenaContext?: string;
-  serenaStartupTimeoutMs?: number;
-  serenaToolTimeoutMs?: number;
-  serenaIdleTimeoutMs?: number;
 }
 
 export interface DevspaceAuthConfig {

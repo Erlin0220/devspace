@@ -134,27 +134,6 @@ such as `rg`, `find`, and `ls` for search and directory inspection.
 
 Use `DEVSPACE_TOOL_MODE=full` to restore dedicated search and directory tools.
 
-When Serena is enabled, the same DevSpace connection also exposes:
-
-- `serena_symbols_overview`
-- `serena_find_symbol`
-- `serena_find_references`
-- `serena_find_implementations`
-- `serena_find_declaration`
-- `serena_diagnostics`
-- `serena_rename_symbol`
-- `serena_replace_symbol_body`
-- `serena_insert_before_symbol`
-- `serena_insert_after_symbol`
-- `serena_safe_delete_symbol`
-
-Use these tools before text search or broad reads when the task depends on code
-symbols, definitions, references, implementations, diagnostics, or a semantic
-cross-file refactor. The tools automatically operate on the exact root associated
-with the supplied `workspaceId`, including managed worktrees. Continue to use
-DevSpace file tools for ordinary text/configuration/documentation edits and
-DevSpace shell tools for tests, builds, and Git.
-
 The experimental Codex-style surface is enabled with
 `DEVSPACE_TOOL_MODE=codex`. It exposes:
 
@@ -190,15 +169,9 @@ The shell tool is for commands that belong in a terminal:
 
 - tests
 - builds
-- Git operations, including `git add`, `git commit`, and `git push`
+- git inspection
 - package scripts
 - environment checks
 
-A model may push when publishing is a natural or implied completion step of the
-requested workflow; the user does not need to repeat a separate push instruction.
-Force-push, hard reset, clean, and branch deletion still require an explicit user
-request.
-
-Outside Git metadata and remote operations, file writes should go through the
-edit/write tools rather than shell redirection, heredocs, `tee`, `sed -i`, or
-generated scripts.
+File writes should go through the edit/write tools rather than shell
+redirection, heredocs, `tee`, `sed -i`, or generated scripts.

@@ -55,8 +55,6 @@ import { formatPathForPrompt } from "./skills.js";
 import { createWorkspaceStore } from "./workspace-store.js";
 import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
 import { summarizeLocalAgentProfile } from "./local-agent-profiles.js";
-import { SerenaManager } from "./serena.js";
-import { registerSerenaTools } from "./serena-tools.js";
 import {
   formatLocalAgentProviderAvailabilitySummary,
   getLocalAgentProviderAvailabilitySnapshot,
@@ -168,25 +166,12 @@ function toolWidgetDescriptorMeta(
 const toolNames = {
   openWorkspace: "open_workspace",
   read: "read",
-  readMany: "read_many",
   write: "write",
   edit: "edit",
-  editMany: "edit_many",
   grep: "grep",
   glob: "glob",
   ls: "ls",
   shell: "bash",
-  serenaSymbolsOverview: "serena_symbols_overview",
-  serenaFindSymbol: "serena_find_symbol",
-  serenaFindReferences: "serena_find_references",
-  serenaFindImplementations: "serena_find_implementations",
-  serenaFindDeclaration: "serena_find_declaration",
-  serenaDiagnostics: "serena_diagnostics",
-  serenaRenameSymbol: "serena_rename_symbol",
-  serenaReplaceSymbolBody: "serena_replace_symbol_body",
-  serenaInsertBeforeSymbol: "serena_insert_before_symbol",
-  serenaInsertAfterSymbol: "serena_insert_after_symbol",
-  serenaSafeDeleteSymbol: "serena_safe_delete_symbol",
 } as const;
 
 interface ToolLogFields {
@@ -209,12 +194,9 @@ function serverInstructions(config: ServerConfig): string {
     config.widgets === "changes"
       ? " If the turn successfully modifies files by creating, editing, overwriting, deleting, moving, or applying patches, call show_changes exactly once for that workspace after the final related file change and before your final response so the user can inspect the aggregate diff for that turn. Do not call it after every individual file change; do not skip it because individual file-change tools already returned diffs."
       : "";
-  const serenaInstruction = config.serena.enabled
-    ? ` For code understanding, symbol lookup, references, implementations, declarations, diagnostics, cross-file renames, and whole-symbol edits, prefer the ${toolNames.serenaSymbolsOverview} and other serena_* tools before text grep or broad file reads. Serena is bound to the opened workspace root, including its exact worktree. Continue to use DevSpace read/edit/write and shell tools for ordinary file operations, configuration, documentation, tests, builds, and Git.`
-    : "";
 
   if (config.toolMode === "codex") {
-    return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree and reuse its workspaceId. Use ${toolNames.read} for one file and ${toolNames.readMany} for multiple known files, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${serenaInstruction}${artifactInstruction}${showChangesInstruction}`;
+    return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree and reuse its workspaceId. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -227,7 +209,7 @@ function serverInstructions(config: ServerConfig): string {
 
   const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
 
-  return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree to obtain a workspaceId. Reuse that same workspaceId for all later file, search, edit, write, show-changes, and shell tools in that folder; do not call ${toolNames.openWorkspace} again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. ${agentsMd}${skills}${inspection}Use ${toolNames.readMany} instead of repeated reads when multiple file paths are already known, and use ${toolNames.editMany} for independent edits across multiple files. Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, Git operations, package scripts, and commands that are better executed by the shell. Git operations that update repository metadata or remotes, including git add, git commit, and git push, are allowed. You may push when publishing is a natural or implied completion step of the requested workflow; do not require the user to repeat a separate explicit push instruction. Do not use force-push, hard reset, clean, or branch deletion unless the user explicitly requests that destructive operation. Outside Git metadata and remote operations, do not create or modify project files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${serenaInstruction}${artifactInstruction}${showChangesInstruction}`;
+  return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree to obtain a workspaceId. Reuse that same workspaceId for all later file, search, edit, write, show-changes, and shell tools in that folder; do not call ${toolNames.openWorkspace} again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${artifactInstruction}${showChangesInstruction}`;
 }
 
 function formatVisibleAgent(agent: {
@@ -716,7 +698,6 @@ function createMcpServer(
   workspaces: WorkspaceRegistry,
   reviewCheckpoints: ReturnType<typeof createReviewCheckpointManager>,
   processSessions: ProcessSessionManager,
-  serena: SerenaManager,
   localAgentProviders: LocalAgentProviderAvailability[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
 ): McpServer {
@@ -809,10 +790,6 @@ function createMcpServer(
         agentProviders: z.array(workspaceLocalAgentProviderOutputSchema),
         agents: z.array(workspaceLocalAgentOutputSchema),
         skillDiagnostics: z.array(z.unknown()),
-        serena: z.object({
-          enabled: z.boolean(),
-          context: z.string(),
-        }),
         instruction: z.string(),
       },
       ...toolWidgetDescriptorMeta(config, "workspace"),
@@ -851,12 +828,9 @@ function createMcpServer(
       const availableAgentsFileOutputs = availableAgentsFiles.map((file) => ({
         path: formatAgentsPath(file.path, workspace.root),
       }));
-      const baseInstruction = config.skillsEnabled
+      const instruction = config.skillsEnabled
         ? "Use this workspaceId in all subsequent tool calls for this project. Do not call open_workspace again for this same folder unless this workspaceId stops working, the user asks to reopen, or you switch to a different folder/worktree. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. When a task matches an available skill in skills, read its path before proceeding."
         : "Use this workspaceId in all subsequent tool calls for this project. Do not call open_workspace again for this same folder unless this workspaceId stops working, the user asks to reopen, or you switch to a different folder/worktree. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file.";
-      const instruction = config.serena.enabled
-        ? `${baseInstruction} Prefer serena_* tools for code symbols, references, implementations, declarations, diagnostics, semantic renames, and whole-symbol edits. Serena is bound to this exact workspace root. Use DevSpace file and shell tools for ordinary edits, tests, builds, and Git.`
-        : baseInstruction;
       const resultContent: ToolContent[] = [
         {
           type: "text" as const,
@@ -881,9 +855,6 @@ function createMcpServer(
               : undefined,
             visibleAgents.length > 0
               ? `Available subagent profiles: ${visibleAgents.map(formatVisibleAgent).join(", ")}`
-              : undefined,
-            config.serena.enabled
-              ? `Serena semantic tools: enabled (context ${config.serena.context})`
               : undefined,
             instruction,
           ].filter(Boolean).join("\n"),
@@ -913,7 +884,6 @@ function createMcpServer(
               agentProviders: visibleAgentProviders.length,
               agents: visibleAgents.length,
               skillDiagnostics: workspace.skillDiagnostics.length,
-              serena: config.serena.enabled,
             },
           },
         },
@@ -929,10 +899,6 @@ function createMcpServer(
           agentProviders: visibleAgentProviders,
           agents: visibleAgents,
           skillDiagnostics: workspace.skillDiagnostics,
-          serena: {
-            enabled: config.serena.enabled,
-            context: config.serena.context,
-          },
           instruction,
         },
       };
@@ -946,7 +912,7 @@ function createMcpServer(
       title: "Read file",
       description:
         [
-          "Read a file inside an open workspace. Use read_many when multiple file paths are already known. Use this for file inspection instead of shell commands like cat or sed. Call open_workspace first and pass workspaceId.",
+          "Read a file inside an open workspace. Use this for file inspection instead of shell commands like cat or sed. Call open_workspace first and pass workspaceId.",
           "Use this tool to inspect relevant AGENTS.md or CLAUDE.md files listed by open_workspace before working in nested directories.",
           config.skillsEnabled
             ? "If available skills were returned and a task matches one, read that skill's path before proceeding. Skill paths may be outside the workspace; only advertised SKILL.md files and files under already-loaded skill directories are readable."
@@ -1036,112 +1002,6 @@ function createMcpServer(
     },
   );
 
-  registerAppTool(
-    server,
-    toolNames.readMany,
-    {
-      title: "Read files",
-      description:
-        "Read up to 10 known files in one MCP call. Prefer this over repeated read calls when the paths are already known. Each file may specify its own offset and limit. Call open_workspace first and pass workspaceId.",
-      inputSchema: {
-        workspaceId: z
-          .string()
-          .describe("Workspace identifier returned by open_workspace."),
-        files: z
-          .array(
-            z.object({
-              path: z.string().describe("File path to read."),
-              offset: z.number().int().positive().optional(),
-              limit: z.number().int().positive().optional(),
-            }),
-          )
-          .min(1)
-          .max(10),
-      },
-      outputSchema: resultOutputSchema({
-        status: z.enum(["read", "partial", "failed"]),
-        files: z.number(),
-        succeeded: z.number(),
-        failed: z.number(),
-      }),
-      ...toolWidgetDescriptorMeta(config, "read"),
-      annotations: { readOnlyHint: true },
-    },
-    async ({ workspaceId, files }) => {
-      const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
-      const batchContent: ToolContent[] = [];
-      let succeeded = 0;
-      let failed = 0;
-      let lines = 0;
-      let characters = 0;
-
-      for (const input of files) {
-        batchContent.push(textBlock(`--- ${input.path} ---`));
-        try {
-          const readPath = workspaces.resolveReadPath(workspace, input.path);
-          const response = await readFileTool(
-            { ...input, path: readPath.absolutePath },
-            {
-              cwd: workspace.root,
-              root: workspace.root,
-              readRoots: readPath.readRoots,
-            },
-          );
-
-          if (response.isError) {
-            failed += 1;
-            batchContent.push(textBlock(`ERROR: ${contentText(response.content)}`));
-            continue;
-          }
-
-          workspaces.markReadPathLoaded(workspace, readPath);
-          const summary = textSummary(response.content);
-          succeeded += 1;
-          lines += summary.lines;
-          characters += summary.characters;
-          batchContent.push(...response.content);
-        } catch (error) {
-          failed += 1;
-          const message = error instanceof Error ? error.message : String(error);
-          batchContent.push(textBlock(`ERROR: ${message}`));
-        }
-      }
-
-      const status = failed === 0 ? "read" : succeeded === 0 ? "failed" : "partial";
-      const result = contentText(batchContent);
-      logToolCall(config, {
-        tool: toolNames.readMany,
-        workspaceId,
-        path: `${files.length} files`,
-        success: failed === 0,
-        durationMs: Math.round(performance.now() - startedAt),
-        error: failed > 0 ? `${failed} read(s) failed` : undefined,
-      });
-
-      return {
-        content: batchContent,
-        isError: status === "failed" ? true : undefined,
-        _meta: {
-          tool: toolNames.read,
-          card: {
-            workspaceId,
-            path: `${files.length} files`,
-            summary: { files: files.length, succeeded, failed, lines, characters },
-            payload: { content: batchContent },
-          },
-        },
-        structuredContent: {
-          status,
-          files: files.length,
-          succeeded,
-          failed,
-          result,
-        },
-      };
-    },
-  );
-
   if (config.toolMode !== "codex") {
   registerAppTool(
     server,
@@ -1223,7 +1083,7 @@ function createMcpServer(
     {
       title: "Edit file",
       description:
-        `Edit one file inside an open workspace by replacing exact text blocks. Use ${toolNames.editMany} for independent edits across multiple files. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file; merge nearby changes into one edit and keep oldText as small as possible while still unique. Call open_workspace first and pass workspaceId.`,
+        `Edit one file inside an open workspace by replacing exact text blocks. Prefer this over ${toolNames.write} for targeted changes. Each oldText must match a unique, non-overlapping region of the original file; merge nearby changes into one edit and keep oldText as small as possible while still unique. Call open_workspace first and pass workspaceId.`,
       inputSchema: {
         workspaceId: z
           .string()
@@ -1302,132 +1162,6 @@ function createMcpServer(
         structuredContent: {
           status: "applied",
           result: contentText(editContent),
-        },
-      };
-    },
-  );
-
-  registerAppTool(
-    server,
-    toolNames.editMany,
-    {
-      title: "Edit files",
-      description:
-        "Edit up to 10 files in one MCP call by replacing exact text blocks. Files are processed independently and failures are reported without preventing later files from being attempted. Call open_workspace first and pass workspaceId.",
-      inputSchema: {
-        workspaceId: z
-          .string()
-          .describe("Workspace identifier returned by open_workspace."),
-        files: z
-          .array(
-            z.object({
-              path: z
-                .string()
-                .describe("File path to edit, relative to the workspace root."),
-              edits: z
-                .array(
-                  z.object({
-                    oldText: z
-                      .string()
-                      .describe("Exact text to replace. Must match uniquely."),
-                    newText: z.string().describe("Replacement text."),
-                  }),
-                )
-                .min(1),
-            }),
-          )
-          .min(1)
-          .max(10),
-      },
-      outputSchema: resultOutputSchema({
-        status: z.enum(["applied", "partial", "failed"]),
-        files: z.number(),
-        succeeded: z.number(),
-        failed: z.number(),
-      }),
-      ...toolWidgetDescriptorMeta(config, "edit"),
-      annotations: EDIT_TOOL_ANNOTATIONS,
-    },
-    async ({ workspaceId, files }) => {
-      const startedAt = performance.now();
-      const workspace = workspaces.getWorkspace(workspaceId);
-      const batchContent: ToolContent[] = [];
-      const patches: string[] = [];
-      const editCount = files.reduce((count, file) => count + file.edits.length, 0);
-      let succeeded = 0;
-      let failed = 0;
-      let additions = 0;
-      let removals = 0;
-
-      for (const input of files) {
-        try {
-          workspaces.resolvePath(workspace, input.path);
-          const response = await editFileTool(input, {
-            cwd: workspace.root,
-            root: workspace.root,
-          });
-
-          if (response.isError) {
-            failed += 1;
-            batchContent.push(
-              textBlock(`Failed ${input.path}: ${contentText(response.content)}`),
-            );
-            continue;
-          }
-
-          const patch = response.details?.patch ?? response.details?.diff;
-          const stats = countDiffStats(patch);
-          succeeded += 1;
-          additions += stats.additions;
-          removals += stats.removals;
-          if (patch) patches.push(patch);
-          batchContent.push(
-            textBlock(`Edited ${input.path} (+${stats.additions} -${stats.removals}).`),
-          );
-        } catch (error) {
-          failed += 1;
-          const message = error instanceof Error ? error.message : String(error);
-          batchContent.push(textBlock(`Failed ${input.path}: ${message}`));
-        }
-      }
-
-      const status = failed === 0 ? "applied" : succeeded === 0 ? "failed" : "partial";
-      const result = contentText(batchContent);
-      const patch = patches.length > 0 ? patches.join("\n") : undefined;
-      logToolCall(config, {
-        tool: toolNames.editMany,
-        workspaceId,
-        path: `${files.length} files`,
-        success: failed === 0,
-        durationMs: Math.round(performance.now() - startedAt),
-        error: failed > 0 ? `${failed} edit(s) failed` : undefined,
-      });
-
-      return {
-        content: batchContent,
-        isError: status === "failed" ? true : undefined,
-        _meta: {
-          tool: toolNames.edit,
-          card: {
-            workspaceId,
-            path: `${files.length} files`,
-            summary: {
-              files: files.length,
-              succeeded,
-              failed,
-              editCount,
-              additions,
-              removals,
-            },
-            payload: { patch },
-          },
-        },
-        structuredContent: {
-          status,
-          files: files.length,
-          succeeded,
-          failed,
-          result,
         },
       };
     },
@@ -1783,8 +1517,8 @@ function createMcpServer(
     {
       title: "Bash",
       description: config.toolMode !== "full"
-        ? `Run a shell command inside an open workspace. Use for tests, builds, Git operations, package scripts, search, file discovery, and directory inspection. Git add, commit, and push are allowed, and push may be used when it is a natural or implied completion step without requiring a separate explicit push instruction. Do not use force-push, hard reset, clean, or branch deletion unless the user explicitly requests that destructive operation. In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Outside Git metadata and remote operations, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`
-        : `Run a shell command inside an open workspace. Use for tests, builds, Git operations, package scripts, and commands that are better executed by the shell. Git add, commit, and push are allowed, and push may be used when it is a natural or implied completion step without requiring a separate explicit push instruction. Do not use force-push, hard reset, clean, or branch deletion unless the user explicitly requests that destructive operation. Outside Git metadata and remote operations, do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`,
+        ? `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, search, file discovery, and directory inspection. In minimal tool mode, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} are disabled; use command-line tools such as grep, rg, find, ls, and tree for those read-only inspection actions. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read} for direct file reads. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`
+        : `Run a shell command inside an open workspace. Use only for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not use ${toolNames.shell} to create or modify files. Do not use shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or generated scripts to write project files; use ${toolNames.edit} for targeted changes and ${toolNames.write} for new files or full rewrites. Prefer ${toolNames.read}, ${toolNames.grep}, ${toolNames.glob}, and ${toolNames.ls} for file inspection. Call open_workspace first and pass workspaceId. This is powerful local execution and should only be exposed behind strong authentication.`,
       inputSchema: {
         workspaceId: z
           .string()
@@ -1792,7 +1526,7 @@ function createMcpServer(
         command: z
           .string()
           .describe(
-            `Shell command to run. Git operations including add, commit, and push are allowed; push may be inferred from the requested workflow. Outside Git metadata and remote operations, use ${toolNames.edit} or ${toolNames.write} for file changes.`,
+            `Shell command to run. Must not create or modify project files; use ${toolNames.edit} or ${toolNames.write} for file changes.`,
           ),
         workingDirectory: z
           .string()
@@ -1868,14 +1602,6 @@ function createMcpServer(
   );
   }
 
-  registerSerenaTools(server, {
-    config,
-    workspaces,
-    serena,
-    logToolCall: (fields) => logToolCall(config, fields),
-    toolMeta: (kind) => toolWidgetDescriptorMeta(config, kind),
-  });
-
   if (config.toolMode === "codex") {
     registerCodexProcessTools(server, config, workspaces, processSessions);
   }
@@ -1921,7 +1647,6 @@ export function createServer(
   const workspaces = new WorkspaceRegistry(config, workspaceStore);
   const reviewCheckpoints = createReviewCheckpointManager();
   const processSessions = new ProcessSessionManager();
-  const serena = new SerenaManager(config.serena);
   const localAgentProviders = config.subagents
     ? getLocalAgentProviderAvailabilitySnapshot()
     : [];
@@ -2084,7 +1809,6 @@ export function createServer(
           workspaces,
           reviewCheckpoints,
           processSessions,
-          serena,
           localAgentProviders,
           incomingArtifactAdapters,
         );
@@ -2117,7 +1841,6 @@ export function createServer(
         const results = await transports.closeAll();
         logSessionCloseResults("server_shutdown", results);
         processSessions.shutdown();
-        await serena.close();
         oauthProvider.close();
         workspaceStore.close?.();
       })();

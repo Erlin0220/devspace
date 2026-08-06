@@ -26,25 +26,6 @@ assert.equal(loadConfig(baseEnv).skillsEnabled, true);
 assert.equal(loadConfig(baseEnv).devspaceSkillsDir, join(emptyConfigDir, "skills"));
 assert.equal(loadConfig(baseEnv).devspaceAgentsDir, join(emptyConfigDir, "agents"));
 assert.equal(loadConfig(baseEnv).subagents, false);
-assert.equal(loadConfig(baseEnv).serena.enabled, false);
-assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SERENA: "1" }).serena.enabled, true);
-assert.equal(
-  loadConfig({ ...baseEnv, DEVSPACE_SERENA_COMMAND: "serena-custom" }).serena.command,
-  "serena-custom",
-);
-assert.equal(loadConfig({ ...baseEnv, DEVSPACE_SERENA_CONTEXT: "codex" }).serena.context, "codex");
-assert.equal(
-  loadConfig({ ...baseEnv, DEVSPACE_SERENA_STARTUP_TIMEOUT_MS: "1234" }).serena.startupTimeoutMs,
-  1234,
-);
-assert.equal(
-  loadConfig({ ...baseEnv, DEVSPACE_SERENA_TOOL_TIMEOUT_MS: "2345" }).serena.toolTimeoutMs,
-  2345,
-);
-assert.equal(
-  loadConfig({ ...baseEnv, DEVSPACE_SERENA_IDLE_TIMEOUT_MS: "3456" }).serena.idleTimeoutMs,
-  3456,
-);
 assert.equal(loadConfig(baseEnv).artifactsEnabled, false);
 assert.equal(loadConfig(baseEnv).artifactMaxFileBytes, 100 * 1024 * 1024);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_ARTIFACTS: "1" }).artifactsEnabled, true);
@@ -168,10 +149,6 @@ assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_ARTIFACT_MAX_FILE_BYTES: "0" }),
   /Invalid DEVSPACE_ARTIFACT_MAX_FILE_BYTES: 0/,
 );
-assert.throws(
-  () => loadConfig({ ...baseEnv, DEVSPACE_SERENA_TOOL_TIMEOUT_MS: "0" }),
-  /Invalid DEVSPACE_SERENA_TOOL_TIMEOUT_MS: 0/,
-);
 
 assert.equal(loadConfig(baseEnv).publicBaseUrl, "http://127.0.0.1:7676");
 assert.deepEqual(loadConfig(baseEnv).allowedHosts, ["localhost", "127.0.0.1", "::1"]);
@@ -199,12 +176,6 @@ writeFileSync(
     subagents: true,
     artifactsEnabled: true,
     artifactMaxFileBytes: 321,
-    serenaEnabled: true,
-    serenaCommand: "serena-persisted",
-    serenaContext: "codex",
-    serenaStartupTimeoutMs: 1111,
-    serenaToolTimeoutMs: 2222,
-    serenaIdleTimeoutMs: 3333,
   }),
 );
 writeFileSync(
@@ -221,14 +192,6 @@ assert.equal(fileConfig.publicBaseUrl, "https://devspace.example.com");
 assert.equal(fileConfig.subagents, true);
 assert.equal(fileConfig.artifactsEnabled, true);
 assert.equal(fileConfig.artifactMaxFileBytes, 321);
-assert.deepEqual(fileConfig.serena, {
-  enabled: true,
-  command: "serena-persisted",
-  context: "codex",
-  startupTimeoutMs: 1111,
-  toolTimeoutMs: 2222,
-  idleTimeoutMs: 3333,
-});
 assert.deepEqual(fileConfig.allowedHosts, [
   "localhost",
   "127.0.0.1",
