@@ -22,6 +22,8 @@ import {
   isArtifactDownloadSupportedPlatform,
   registerArtifactTools,
 } from "./artifact-tools.js";
+import { CodeGraphManager } from "./codegraph.js";
+import { registerCodeGraphTools } from "./codegraph-tools.js";
 import { loadConfig, type ServerConfig, type WidgetMode } from "./config.js";
 import {
   createOpenAIIncomingArtifactAdapter,
@@ -172,6 +174,7 @@ const toolNames = {
   glob: "glob",
   ls: "ls",
   shell: "bash",
+  codegraphExplore: "codegraph_explore",
 } as const;
 
 interface ToolLogFields {
@@ -194,9 +197,12 @@ function serverInstructions(config: ServerConfig): string {
     config.widgets === "changes"
       ? " If the turn successfully modifies files by creating, editing, overwriting, deleting, moving, or applying patches, call show_changes exactly once for that workspace after the final related file change and before your final response so the user can inspect the aggregate diff for that turn. Do not call it after every individual file change; do not skip it because individual file-change tools already returned diffs."
       : "";
+  const codegraphInstruction = config.codegraph.enabled
+    ? ` For indexed source-code questions and before editing named symbols, call ${toolNames.codegraphExplore} first. It returns relevant verbatim source, call paths, and change impact for the current workspace; treat returned source as already read. Use normal DevSpace tools for configuration, documentation, generated files, or projects without a .codegraph index.`
+    : "";
 
   if (config.toolMode === "codex") {
-    return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree and reuse its workspaceId. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
+    return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree and reuse its workspaceId. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${codegraphInstruction}${artifactInstruction}${showChangesInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -209,7 +215,7 @@ function serverInstructions(config: ServerConfig): string {
 
   const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
 
-  return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree to obtain a workspaceId. Reuse that same workspaceId for all later file, search, edit, write, show-changes, and shell tools in that folder; do not call ${toolNames.openWorkspace} again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${artifactInstruction}${showChangesInstruction}`;
+  return `Use DevSpace as a local coding workspace. Call ${toolNames.openWorkspace} once per project folder or worktree to obtain a workspaceId. Reuse that same workspaceId for all later file, search, edit, write, show-changes, and shell tools in that folder; do not call ${toolNames.openWorkspace} again unless switching folders/worktrees, changing checkout/worktree mode, the workspaceId is rejected as unknown, or the user explicitly asks to reopen. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${codegraphInstruction}${artifactInstruction}${showChangesInstruction}`;
 }
 
 function formatVisibleAgent(agent: {
@@ -698,6 +704,7 @@ function createMcpServer(
   workspaces: WorkspaceRegistry,
   reviewCheckpoints: ReturnType<typeof createReviewCheckpointManager>,
   processSessions: ProcessSessionManager,
+  codegraph: CodeGraphManager,
   localAgentProviders: LocalAgentProviderAvailability[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
 ): McpServer {
@@ -790,6 +797,9 @@ function createMcpServer(
         agentProviders: z.array(workspaceLocalAgentProviderOutputSchema),
         agents: z.array(workspaceLocalAgentOutputSchema),
         skillDiagnostics: z.array(z.unknown()),
+        codegraph: z.object({
+          enabled: z.boolean(),
+        }),
         instruction: z.string(),
       },
       ...toolWidgetDescriptorMeta(config, "workspace"),
@@ -828,9 +838,12 @@ function createMcpServer(
       const availableAgentsFileOutputs = availableAgentsFiles.map((file) => ({
         path: formatAgentsPath(file.path, workspace.root),
       }));
-      const instruction = config.skillsEnabled
+      const baseInstruction = config.skillsEnabled
         ? "Use this workspaceId in all subsequent tool calls for this project. Do not call open_workspace again for this same folder unless this workspaceId stops working, the user asks to reopen, or you switch to a different folder/worktree. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. When a task matches an available skill in skills, read its path before proceeding."
         : "Use this workspaceId in all subsequent tool calls for this project. Do not call open_workspace again for this same folder unless this workspaceId stops working, the user asks to reopen, or you switch to a different folder/worktree. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file.";
+      const instruction = config.codegraph.enabled
+        ? `${baseInstruction} Use codegraph_explore first for indexed source-code understanding and before editing named symbols; treat its returned source as already read. Use normal DevSpace tools for configs, docs, generated files, and unindexed projects.`
+        : baseInstruction;
       const resultContent: ToolContent[] = [
         {
           type: "text" as const,
@@ -855,6 +868,9 @@ function createMcpServer(
               : undefined,
             visibleAgents.length > 0
               ? `Available subagent profiles: ${visibleAgents.map(formatVisibleAgent).join(", ")}`
+              : undefined,
+            config.codegraph.enabled
+              ? "CodeGraph semantic exploration: enabled"
               : undefined,
             instruction,
           ].filter(Boolean).join("\n"),
@@ -884,6 +900,7 @@ function createMcpServer(
               agentProviders: visibleAgentProviders.length,
               agents: visibleAgents.length,
               skillDiagnostics: workspace.skillDiagnostics.length,
+              codegraph: config.codegraph.enabled,
             },
           },
         },
@@ -899,6 +916,9 @@ function createMcpServer(
           agentProviders: visibleAgentProviders,
           agents: visibleAgents,
           skillDiagnostics: workspace.skillDiagnostics,
+          codegraph: {
+            enabled: config.codegraph.enabled,
+          },
           instruction,
         },
       };
@@ -1606,6 +1626,14 @@ function createMcpServer(
     registerCodexProcessTools(server, config, workspaces, processSessions);
   }
 
+  registerCodeGraphTools(server, {
+    config,
+    workspaces,
+    codegraph,
+    logToolCall: (fields) => logToolCall(config, fields),
+    toolMeta: () => toolWidgetDescriptorMeta(config, "search"),
+  });
+
   if (config.artifactsEnabled && isArtifactDownloadSupportedPlatform()) {
     registerArtifactTools(server, {
       config,
@@ -1647,6 +1675,7 @@ export function createServer(
   const workspaces = new WorkspaceRegistry(config, workspaceStore);
   const reviewCheckpoints = createReviewCheckpointManager();
   const processSessions = new ProcessSessionManager();
+  const codegraph = new CodeGraphManager(config.codegraph);
   const localAgentProviders = config.subagents
     ? getLocalAgentProviderAvailabilitySnapshot()
     : [];
@@ -1809,6 +1838,7 @@ export function createServer(
           workspaces,
           reviewCheckpoints,
           processSessions,
+          codegraph,
           localAgentProviders,
           incomingArtifactAdapters,
         );
@@ -1841,6 +1871,7 @@ export function createServer(
         const results = await transports.closeAll();
         logSessionCloseResults("server_shutdown", results);
         processSessions.shutdown();
+        await codegraph.close();
         oauthProvider.close();
         workspaceStore.close?.();
       })();
