@@ -109,26 +109,6 @@ Codex-mode commands run without a PTY by default. Set `tty: true` on
 `node-pty` dependency; `write_stdin` can send input, poll output, and resize PTY
 sessions.
 
-## CodeGraph
-
-CodeGraph integration is optional and disabled by default. When enabled,
-DevSpace exposes one read-only `codegraph_explore` tool. Every call is bound to
-the selected `workspaceId`; DevSpace injects that workspace root as the
-CodeGraph project path. One lazy MCP client is shared by all DevSpace sessions,
-and CodeGraph's daemon shares the underlying index and watcher.
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `DEVSPACE_CODEGRAPH` | `0` | Enable `codegraph_explore`. |
-| `DEVSPACE_CODEGRAPH_COMMAND` | `codegraph` on Unix; standalone CodeGraph Node runtime on Windows | Command used to start CodeGraph MCP. |
-| `DEVSPACE_CODEGRAPH_STARTUP_TIMEOUT_MS` | `30000` | Maximum MCP startup time. |
-| `DEVSPACE_CODEGRAPH_TOOL_TIMEOUT_MS` | `120000` | Maximum duration of one exploration call. |
-
-The persisted config equivalents are `codegraphEnabled`, `codegraphCommand`,
-`codegraphArgs`, `codegraphStartupTimeoutMs`, and `codegraphToolTimeoutMs`.
-Projects must already contain a `.codegraph` index; DevSpace does not create or
-remove indexes automatically.
-
 ## Widgets
 
 `DEVSPACE_WIDGETS` controls ChatGPT Apps iframe usage.

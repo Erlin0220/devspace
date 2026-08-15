@@ -26,14 +26,6 @@ assert.equal(loadConfig(baseEnv).skillsEnabled, true);
 assert.equal(loadConfig(baseEnv).devspaceSkillsDir, join(emptyConfigDir, "skills"));
 assert.equal(loadConfig(baseEnv).devspaceAgentsDir, join(emptyConfigDir, "agents"));
 assert.equal(loadConfig(baseEnv).subagents, false);
-assert.equal(loadConfig(baseEnv).codegraph.enabled, false);
-assert.equal(loadConfig(baseEnv).codegraph.startupTimeoutMs, 30_000);
-assert.equal(loadConfig(baseEnv).codegraph.toolTimeoutMs, 120_000);
-assert.equal(loadConfig({ ...baseEnv, DEVSPACE_CODEGRAPH: "1" }).codegraph.enabled, true);
-assert.equal(
-  loadConfig({ ...baseEnv, DEVSPACE_CODEGRAPH_COMMAND: "custom-codegraph" }).codegraph.command,
-  "custom-codegraph",
-);
 assert.equal(loadConfig(baseEnv).artifactsEnabled, false);
 assert.equal(loadConfig(baseEnv).artifactMaxFileBytes, 100 * 1024 * 1024);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_ARTIFACTS: "1" }).artifactsEnabled, true);
@@ -157,10 +149,6 @@ assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_ARTIFACT_MAX_FILE_BYTES: "0" }),
   /Invalid DEVSPACE_ARTIFACT_MAX_FILE_BYTES: 0/,
 );
-assert.throws(
-  () => loadConfig({ ...baseEnv, DEVSPACE_CODEGRAPH_TOOL_TIMEOUT_MS: "0" }),
-  /Invalid DEVSPACE_CODEGRAPH_TOOL_TIMEOUT_MS: 0/,
-);
 
 assert.equal(loadConfig(baseEnv).publicBaseUrl, "http://127.0.0.1:7676");
 assert.deepEqual(loadConfig(baseEnv).allowedHosts, ["localhost", "127.0.0.1", "::1"]);
@@ -188,11 +176,6 @@ writeFileSync(
     subagents: true,
     artifactsEnabled: true,
     artifactMaxFileBytes: 321,
-    codegraphEnabled: true,
-    codegraphCommand: "persisted-codegraph",
-    codegraphArgs: ["serve", "--mcp"],
-    codegraphStartupTimeoutMs: 12_345,
-    codegraphToolTimeoutMs: 54_321,
   }),
 );
 writeFileSync(
@@ -209,11 +192,6 @@ assert.equal(fileConfig.publicBaseUrl, "https://devspace.example.com");
 assert.equal(fileConfig.subagents, true);
 assert.equal(fileConfig.artifactsEnabled, true);
 assert.equal(fileConfig.artifactMaxFileBytes, 321);
-assert.equal(fileConfig.codegraph.enabled, true);
-assert.equal(fileConfig.codegraph.command, "persisted-codegraph");
-assert.deepEqual(fileConfig.codegraph.args, ["serve", "--mcp"]);
-assert.equal(fileConfig.codegraph.startupTimeoutMs, 12_345);
-assert.equal(fileConfig.codegraph.toolTimeoutMs, 54_321);
 assert.deepEqual(fileConfig.allowedHosts, [
   "localhost",
   "127.0.0.1",

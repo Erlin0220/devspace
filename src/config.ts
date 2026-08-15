@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
 import type { LoggingConfig, LogFormat, LogLevel } from "./logger.js";
 import type { OAuthConfig } from "./oauth-provider.js";
+import { parseCodeGraphConfig, type CodeGraphConfig } from "./codegraph-config.js";
 import { devspaceAgentsDir, devspaceSkillsDir, loadDevspaceFiles } from "./user-config.js";
 
 export type ToolMode = "minimal" | "full" | "codex";
@@ -10,16 +11,6 @@ export type WidgetMode = "off" | "changes" | "full";
 const DEFAULT_OAUTH_ACCESS_TOKEN_TTL_SECONDS = 60 * 60;
 const DEFAULT_OAUTH_REFRESH_TOKEN_TTL_SECONDS = 30 * 24 * 60 * 60;
 const DEFAULT_ARTIFACT_MAX_FILE_BYTES = 100 * 1024 * 1024;
-const DEFAULT_CODEGRAPH_STARTUP_TIMEOUT_MS = 30_000;
-const DEFAULT_CODEGRAPH_TOOL_TIMEOUT_MS = 120_000;
-
-export interface CodeGraphConfig {
-  enabled: boolean;
-  command: string;
-  args: string[];
-  startupTimeoutMs: number;
-  toolTimeoutMs: number;
-}
 
 export interface ServerConfig {
   host: string;
@@ -218,54 +209,6 @@ function defaultAgentDir(): string {
   return join(homedir(), ".codex");
 }
 
-function defaultCodeGraphInstallDir(): string {
-  const localAppData = process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local");
-  return join(localAppData, "codegraph", "current");
-}
-
-function defaultCodeGraphCommand(): string {
-  return process.platform === "win32"
-    ? join(defaultCodeGraphInstallDir(), "node.exe")
-    : "codegraph";
-}
-
-function defaultCodeGraphArgs(): string[] {
-  return process.platform === "win32"
-    ? [
-        join(defaultCodeGraphInstallDir(), "lib", "dist", "bin", "codegraph.js"),
-        "serve",
-        "--mcp",
-      ]
-    : ["serve", "--mcp"];
-}
-
-function parseCodeGraphConfig(
-  env: NodeJS.ProcessEnv,
-  files: ReturnType<typeof loadDevspaceFiles>,
-): CodeGraphConfig {
-  return {
-    enabled: env.DEVSPACE_CODEGRAPH === undefined
-      ? files.config.codegraphEnabled === true
-      : parseBoolean(env.DEVSPACE_CODEGRAPH),
-    command: env.DEVSPACE_CODEGRAPH_COMMAND
-      ?? files.config.codegraphCommand
-      ?? defaultCodeGraphCommand(),
-    args: files.config.codegraphArgs ?? defaultCodeGraphArgs(),
-    startupTimeoutMs: parsePositiveInteger(
-      env.DEVSPACE_CODEGRAPH_STARTUP_TIMEOUT_MS
-        ?? numberConfigValue(files.config.codegraphStartupTimeoutMs),
-      DEFAULT_CODEGRAPH_STARTUP_TIMEOUT_MS,
-      "DEVSPACE_CODEGRAPH_STARTUP_TIMEOUT_MS",
-    ),
-    toolTimeoutMs: parsePositiveInteger(
-      env.DEVSPACE_CODEGRAPH_TOOL_TIMEOUT_MS
-        ?? numberConfigValue(files.config.codegraphToolTimeoutMs),
-      DEFAULT_CODEGRAPH_TOOL_TIMEOUT_MS,
-      "DEVSPACE_CODEGRAPH_TOOL_TIMEOUT_MS",
-    ),
-  };
-}
-
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   const files = loadDevspaceFiles(env);
   const host = env.HOST ?? files.config.host ?? "127.0.0.1";
@@ -311,7 +254,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
         ? files.config.subagents === true
         : parseBoolean(env.DEVSPACE_SUBAGENTS),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
-    codegraph: parseCodeGraphConfig(env, files),
+    codegraph: parseCodeGraphConfig(env, files.config),
     logging: parseLoggingConfig(env),
   };
 }

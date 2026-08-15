@@ -21,11 +21,6 @@ export interface DevspaceUserConfig {
   artifactMaxFileBytes?: number;
   agentDir?: string;
   subagents?: boolean;
-  codegraphEnabled?: boolean;
-  codegraphCommand?: string;
-  codegraphArgs?: string[];
-  codegraphStartupTimeoutMs?: number;
-  codegraphToolTimeoutMs?: number;
 }
 
 export interface DevspaceAuthConfig {

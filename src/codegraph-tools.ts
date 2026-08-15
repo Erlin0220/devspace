@@ -2,7 +2,6 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { registerAppTool } from "@modelcontextprotocol/ext-apps/server";
 import * as z from "zod/v4";
 import type { CodeGraphManager } from "./codegraph.js";
-import type { ServerConfig } from "./config.js";
 import type { WorkspaceRegistry } from "./workspaces.js";
 
 interface CodeGraphToolLog {
@@ -14,7 +13,6 @@ interface CodeGraphToolLog {
 }
 
 interface CodeGraphToolRegistrationOptions {
-  config: ServerConfig;
   workspaces: WorkspaceRegistry;
   codegraph: CodeGraphManager;
   logToolCall(fields: CodeGraphToolLog): void;
@@ -25,7 +23,7 @@ export function registerCodeGraphTools(
   server: McpServer,
   options: CodeGraphToolRegistrationOptions,
 ): void {
-  if (!options.config.codegraph.enabled) return;
+  if (!options.codegraph.enabled) return;
 
   registerAppTool(
     server,
@@ -33,9 +31,9 @@ export function registerCodeGraphTools(
     {
       title: "Explore code graph",
       description:
-        "Explore the current workspace through its CodeGraph index. Use this first for architecture, call flow, impact analysis, bug tracing, or before editing related symbols. Returns relevant verbatim source and relationships in one call. The workspace root is supplied automatically from workspaceId.",
+        "Explore the current workspace through its CodeGraph index. Use this first for architecture, call flow, impact analysis, bug tracing, or before editing related symbols. If the workspace is not indexed yet, DevSpace initializes CodeGraph once and retries automatically. Returns relevant verbatim source and relationships in one call. The workspace root is supplied automatically from workspaceId.",
       inputSchema: {
-        workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
+        workspaceId: z.string().describe("Workspace to use. Reuse the current project's workspaceId."),
         query: z
           .string()
           .min(1)
