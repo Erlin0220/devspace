@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +23,7 @@ export interface SkillReadResolution {
 
 const SUBAGENT_DELEGATION_NAME = "subagent-delegation";
 const SUBAGENT_DELEGATION_SKILL = join(SUBAGENT_DELEGATION_NAME, "SKILL.md");
+const DEFAULT_BUNDLED_SKILLS = ["cangjie-distill"] as const;
 
 function bundledSkillsDir(): string {
   return fileURLToPath(new URL("../skills", import.meta.url));
@@ -30,6 +31,22 @@ function bundledSkillsDir(): string {
 
 function hasSubagentDelegationSkill(skillDir: string): boolean {
   return existsSync(join(skillDir, SUBAGENT_DELEGATION_SKILL));
+}
+
+function ensureBundledWorkspaceSkills(config: ServerConfig): void {
+  const skillNames = [
+    ...DEFAULT_BUNDLED_SKILLS,
+    ...(config.subagents ? [SUBAGENT_DELEGATION_NAME] : []),
+  ];
+  const sourceRoot = bundledSkillsDir();
+
+  mkdirSync(config.devspaceSkillsDir, { recursive: true });
+  for (const skillName of skillNames) {
+    const source = join(sourceRoot, skillName);
+    const target = join(config.devspaceSkillsDir, skillName);
+    if (!existsSync(source) || existsSync(target)) continue;
+    cpSync(source, target, { recursive: true, force: false, errorOnExist: false });
+  }
 }
 
 export function effectiveSkillPaths(config: ServerConfig, cwd: string): string[] {
@@ -64,6 +81,7 @@ function resolveSkillPath(path: string, cwd: string): string {
 export function loadWorkspaceSkills(config: ServerConfig, cwd: string): LoadedSkills {
   if (!config.skillsEnabled) return { skills: [], diagnostics: [] };
 
+  ensureBundledWorkspaceSkills(config);
   const result = loadSkills({
     cwd,
     agentDir: config.agentDir,

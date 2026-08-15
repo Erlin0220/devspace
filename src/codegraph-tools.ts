@@ -31,7 +31,7 @@ export function registerCodeGraphTools(
     {
       title: "Explore code graph",
       description:
-        "Explore the current workspace through its CodeGraph index. Use this first for architecture, call flow, impact analysis, bug tracing, or before editing related symbols. If the workspace is not indexed yet, DevSpace initializes CodeGraph once and retries automatically. Returns relevant verbatim source and relationships in one call. The workspace root is supplied automatically from workspaceId.",
+        "Explore the current workspace through its CodeGraph index. DevSpace automatically initializes a missing workspace index on first use and retries once if CodeGraph still reports stale pre-init state. Use this first for architecture, call flow, impact analysis, bug tracing, or before editing related symbols. Returns relevant verbatim source and relationships in one call. The workspace root is supplied automatically from workspaceId.",
       inputSchema: {
         workspaceId: z.string().describe("Workspace to use. Reuse the current project's workspaceId."),
         query: z
@@ -51,7 +51,7 @@ export function registerCodeGraphTools(
       outputSchema: { result: z.string() },
       ...options.toolMeta(),
       annotations: {
-        readOnlyHint: true,
+        readOnlyHint: false,
         destructiveHint: false,
         idempotentHint: true,
         openWorldHint: false,

@@ -1,8 +1,13 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
+import { access } from "node:fs/promises";
+import { join } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { CodeGraphConfig } from "./codegraph-config.js";
 import type { Workspace } from "./workspaces.js";
+
+const CODEGRAPH_INIT_TIMEOUT_MS = 10 * 60_000;
+const MAX_PROCESS_OUTPUT = 8_000;
 
 interface CodeGraphSession {
   client: Client;
@@ -21,9 +26,9 @@ function processEnvironment(): Record<string, string> {
   );
 }
 
-function appendStderr(current: string, chunk: unknown): string {
+function appendBounded(current: string, chunk: unknown): string {
   const next = `${current}${String(chunk)}`;
-  return next.length <= 8_000 ? next : next.slice(-8_000);
+  return next.length <= MAX_PROCESS_OUTPUT ? next : next.slice(-MAX_PROCESS_OUTPUT);
 }
 
 function resultText(content: unknown): string {
@@ -38,30 +43,110 @@ function resultText(content: unknown): string {
     .join("\n");
 }
 
-export function isCodeGraphNotIndexedResult(result: string): boolean {
-  const text = result.trimStart();
-  return /^The project at .+ isn't indexed with codegraph\b/.test(text)
-    || /^CodeGraph (?:is )?not initialized\b/i.test(text)
-    || /^CodeGraph isn't available here [—-] no \.codegraph\/ index exists\b/i.test(text);
-}
-
-export function codeGraphInitArgs(args: readonly string[], workspaceRoot: string): string[] {
-  const serveIndex = args.lastIndexOf("serve");
+export function buildCodeGraphInitArgs(serverArgs: readonly string[], projectRoot: string): string[] {
+  const serveIndex = serverArgs.lastIndexOf("serve");
   if (serveIndex < 0) {
     throw new Error(
-      'Cannot auto-initialize CodeGraph because its configured arguments do not contain the "serve" command.',
+      "Unable to initialize CodeGraph because its configured server arguments do not contain the 'serve' command.",
     );
   }
-  return [...args.slice(0, serveIndex), "init", workspaceRoot];
+
+  return [...serverArgs.slice(0, serveIndex), "init", projectRoot, "-i"];
 }
 
-function initializationKey(workspaceRoot: string): string {
-  return process.platform === "win32" ? workspaceRoot.toLowerCase() : workspaceRoot;
+export function needsCodeGraphInitialization(result: string): boolean {
+  if (result.length > 4_000) return false;
+
+  const text = result.trimStart();
+  const firstLine = text.split(/\r?\n/, 1)[0] ?? "";
+  if (/^The project at .+ isn't indexed with codegraph\b/i.test(firstLine)) return true;
+  if (/^CodeGraph (?:is )?not initialized\b/i.test(firstLine)) return true;
+  if (/^CodeGraph isn't available here [—-] no \.codegraph\/ index exists\b/i.test(firstLine)) return true;
+  if (/^No CodeGraph project is loaded\b/i.test(firstLine)) return true;
+
+  const normalized = firstLine.toLowerCase();
+  const mentionsInit = normalized.includes("codegraph init");
+  const saysUnindexed = normalized.includes("isn't indexed") || normalized.includes("is not indexed");
+  return mentionsInit && saysUnindexed;
 }
 
-function commandOutput(stdout: string, stderr: string): string {
-  const output = [stdout.trim(), stderr.trim()].filter(Boolean).join("\n");
-  return output.length <= 8_000 ? output : output.slice(-8_000);
+async function hasCodeGraphIndex(projectRoot: string): Promise<boolean> {
+  try {
+    await access(join(projectRoot, ".codegraph", "codegraph.db"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function initializationKey(projectRoot: string): string {
+  return process.platform === "win32" ? projectRoot.toLowerCase() : projectRoot;
+}
+
+async function runCodeGraphCommand(
+  command: string,
+  args: string[],
+  cwd: string,
+  timeoutMs: number,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: processEnvironment(),
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let output = "";
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      if (error) reject(error);
+      else resolve();
+    };
+
+    child.stdout?.on("data", (chunk) => {
+      output = appendBounded(output, chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      output = appendBounded(output, chunk);
+    });
+    child.once("error", (error) => {
+      const detail = output.trim();
+      finish(
+        new Error(
+          `Unable to initialize CodeGraph: ${error.message}${detail ? `\n${detail}` : ""}`,
+        ),
+      );
+    });
+    child.once("close", (code, signal) => {
+      if (code === 0) {
+        finish();
+        return;
+      }
+
+      const detail = output.trim();
+      finish(
+        new Error(
+          `CodeGraph initialization failed with exit code ${code ?? "unknown"}${signal ? ` (${signal})` : ""}${detail ? `\n${detail}` : ""}`,
+        ),
+      );
+    });
+
+    timer = setTimeout(() => {
+      child.kill();
+      const detail = output.trim();
+      finish(
+        new Error(
+          `CodeGraph initialization timed out after ${Math.round(timeoutMs / 1_000)} seconds${detail ? `\n${detail}` : ""}`,
+        ),
+      );
+    }, timeoutMs);
+    timer.unref?.();
+  });
 }
 
 export class CodeGraphManager {
@@ -85,10 +170,13 @@ export class CodeGraphManager {
       );
     }
 
+    await this.ensureProjectInitialized(workspace);
     const first = await this.callExplore(workspace, query, maxFiles);
-    if (!isCodeGraphNotIndexedResult(first.result)) return first;
+    if (!needsCodeGraphInitialization(first.result)) return first;
 
-    await this.ensureWorkspaceInitialized(workspace.root);
+    // CodeGraph can occasionally keep pre-init project state for the first request.
+    // Re-check the index and retry exactly once instead of leaking init guidance to the host.
+    await this.ensureProjectInitialized(workspace);
     return this.callExplore(workspace, query, maxFiles);
   }
 
@@ -128,46 +216,39 @@ export class CodeGraphManager {
     };
   }
 
-  private async ensureWorkspaceInitialized(workspaceRoot: string): Promise<void> {
-    const key = initializationKey(workspaceRoot);
-    const current = this.initializations.get(key);
-    if (current) return current;
+  private async ensureProjectInitialized(workspace: Workspace): Promise<void> {
+    if (await hasCodeGraphIndex(workspace.root)) return;
 
-    const pending = this.initializeWorkspace(workspaceRoot).finally(() => {
-      if (this.initializations.get(key) === pending) this.initializations.delete(key);
+    const key = initializationKey(workspace.root);
+    const current = this.initializations.get(key);
+    if (current) {
+      await current;
+      return;
+    }
+
+    const pending = this.initializeProject(workspace).finally(() => {
+      if (this.initializations.get(key) === pending) {
+        this.initializations.delete(key);
+      }
     });
     this.initializations.set(key, pending);
-    return pending;
+    await pending;
   }
 
-  private async initializeWorkspace(workspaceRoot: string): Promise<void> {
-    const args = codeGraphInitArgs(this.config.args, workspaceRoot);
+  private async initializeProject(workspace: Workspace): Promise<void> {
+    const args = buildCodeGraphInitArgs(this.config.args, workspace.root);
+    await runCodeGraphCommand(
+      this.config.command,
+      args,
+      workspace.root,
+      Math.max(CODEGRAPH_INIT_TIMEOUT_MS, this.config.toolTimeoutMs),
+    );
 
-    await new Promise<void>((resolve, reject) => {
-      execFile(
-        this.config.command,
-        args,
-        {
-          cwd: workspaceRoot,
-          env: processEnvironment(),
-          windowsHide: true,
-          maxBuffer: 8 * 1024 * 1024,
-        },
-        (error, stdout, stderr) => {
-          if (!error) {
-            resolve();
-            return;
-          }
-
-          const output = commandOutput(stdout, stderr);
-          reject(
-            new Error(
-              `Unable to initialize CodeGraph for ${workspaceRoot}: ${error.message}${output ? `\n${output}` : ""}`,
-            ),
-          );
-        },
+    if (!(await hasCodeGraphIndex(workspace.root))) {
+      throw new Error(
+        `CodeGraph initialization completed without creating an index for workspace: ${workspace.root}`,
       );
-    });
+    }
   }
 
   private async ensureSession(): Promise<CodeGraphSession> {
@@ -196,7 +277,7 @@ export class CodeGraphManager {
     };
 
     transport.stderr?.on("data", (chunk) => {
-      session.stderr = appendStderr(session.stderr, chunk);
+      session.stderr = appendBounded(session.stderr, chunk);
     });
     transport.onclose = () => {
       const current = this.session;
