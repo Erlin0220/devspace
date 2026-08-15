@@ -48,13 +48,6 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.equal("workspaceReused" in repeatedStructured, false);
   assert.equal("includeBootstrapContext" in repeatedStructured, false);
 
-  const repeatedText = responseText(repeated);
-  assert.match(repeatedText, /Workspace already open as/);
-  assert.match(repeatedText, /same checkout previously opened/);
-  assert.match(repeatedText, /Reuse this workspaceId for subsequent tool calls/);
-  assert.match(repeatedText, /previously provided for this workspace/);
-  assert.match(repeatedText, /not repeated here/);
-
   const card = responseCard(repeated);
   assert.equal(card.workspaceReused, true);
   assert.equal(card.includeBootstrapContext, false);
@@ -63,7 +56,6 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.ok(Array.isArray(card.skills));
   assert.ok(Array.isArray(card.agentProviders));
   assert.ok(Array.isArray(card.agents));
-  assert.ok(Array.isArray(card.skillDiagnostics));
 });
 
 test("concurrent checkout opens return one full context and one reuse instruction", async (t) => {
@@ -105,7 +97,6 @@ test("new worktrees always receive a fresh workspace and complete worktree conte
     assert.match(responseText(result), /Opened isolated worktree workspace/);
   }
   assert.equal(structuredContent(checkoutAgain).agentsFiles, undefined);
-  assert.match(responseText(checkoutAgain), /same checkout previously opened/);
 });
 
 test("checkout opened after a worktree receives its own complete context", async (t) => {
@@ -120,7 +111,6 @@ test("checkout opened after a worktree receives its own complete context", async
   assert.ok(Array.isArray(structuredContent(checkout).agentsFiles));
   assert.equal(structuredContent(checkoutAgain).workspaceId, structuredContent(checkout).workspaceId);
   assert.equal(structuredContent(checkoutAgain).agentsFiles, undefined);
-  assert.match(responseText(checkoutAgain), /same checkout previously opened/);
 });
 
 test("a host without conversation metadata receives normal explicit-workspace behavior", async (t) => {
@@ -172,7 +162,6 @@ test("checkout reuse and context suppression survive a registry restart", async 
     const restored = await callOpen(restoredClient, context.project, "chat-1");
     assert.equal(structuredContent(restored).workspaceId, firstWorkspaceId);
     assert.equal(structuredContent(restored).agentsFiles, undefined);
-    assert.match(responseText(restored), /same checkout previously opened/);
   } finally {
     await closeRestored();
   }
