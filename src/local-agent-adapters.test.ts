@@ -8,6 +8,7 @@ import {
   extractPiProviderError,
   extractPiStreamingText,
   piCommandEnvironment,
+  piSpawnCommand,
   resolveAcpModelConfigUpdate,
   resolveAcpThinkingConfigUpdate,
 } from "./local-agent-adapters.js";
@@ -362,6 +363,18 @@ assert.equal(
     },
   ]),
   "Final Pi response.",
+);
+
+assert.deepEqual(
+  piSpawnCommand("pi", ["--mode", "rpc"], "win32", { ComSpec: "C:\\Windows\\System32\\cmd.exe" }),
+  {
+    command: "C:\\Windows\\System32\\cmd.exe",
+    args: ["/d", "/s", "/c", "pi", "--mode", "rpc"],
+  },
+);
+assert.deepEqual(
+  piSpawnCommand("pi", ["--mode", "rpc"], "linux", {}),
+  { command: "pi", args: ["--mode", "rpc"] },
 );
 
 {

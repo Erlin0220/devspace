@@ -338,9 +338,11 @@ class PiRpcLocalAgentAdapter implements LocalAgentAdapter {
     if (input.model) args.push("--model", input.model);
     if (input.thinking) args.push("--thinking", input.thinking);
     if (input.providerSessionId) args.push("--session", input.providerSessionId);
-    const child = spawn(process.env.PI_COMMAND ?? "pi", args, {
+    const environment = piCommandEnvironment(process.env);
+    const launch = piSpawnCommand(process.env.PI_COMMAND ?? "pi", args, process.platform, environment);
+    const child = spawn(launch.command, launch.args, {
       cwd: input.workspace,
-      env: piCommandEnvironment(process.env),
+      env: environment,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -379,6 +381,19 @@ class PiRpcLocalAgentAdapter implements LocalAgentAdapter {
   }
 }
 
+export function piSpawnCommand(
+  command: string,
+  args: string[],
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): { command: string; args: string[] } {
+  if (platform !== "win32") return { command, args };
+  return {
+    command: env.ComSpec ?? env.COMSPEC ?? "cmd.exe",
+    args: ["/d", "/s", "/c", command, ...args],
+  };
+}
+
 export function piCommandEnvironment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   if (env.PI_COMMAND) return env;
   const path = env.PATH;
@@ -405,6 +420,9 @@ class JsonLineRpc {
     child.stdout.on("data", (chunk: Buffer) => this.handleStdout(chunk.toString("utf8")));
     child.stderr.on("data", (chunk: Buffer) => {
       this.stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      this.failAll(new Error(`Unable to start Pi RPC process: ${error.message}`));
     });
     child.on("exit", (code, signal) => {
       this.failAll(new Error(`Pi RPC process exited with code ${code ?? "null"} and signal ${signal ?? "null"}\n${this.stderr}`.trim()));
