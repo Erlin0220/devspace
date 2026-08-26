@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { resolveShellCommand, terminateProcessTree } from "./process-platform.js";
+import { normalizeNulRedirects, resolveShellCommand, terminateProcessTree } from "./process-platform.js";
+
+assert.equal(normalizeNulRedirects("echo hello > nul", "win32"), "echo hello >/dev/null");
+assert.equal(normalizeNulRedirects("echo hello 2>> NUL", "win32"), "echo hello 2>>/dev/null");
+assert.equal(normalizeNulRedirects("echo hello > nul.txt", "win32"), "echo hello > nul.txt");
+assert.equal(normalizeNulRedirects('echo "hello > nul"', "win32"), 'echo "hello > nul"');
+assert.equal(normalizeNulRedirects("echo \\> nul", "win32"), "echo \\> nul");
+assert.equal(normalizeNulRedirects("echo hello > nul", "linux"), "echo hello > nul");
 
 assert.deepEqual(resolveShellCommand("echo ok", "win32", { ComSpec: "C:\\Windows\\cmd.exe" }), {
   executable: "C:\\Windows\\cmd.exe",
