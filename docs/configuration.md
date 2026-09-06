@@ -242,6 +242,12 @@ Set `DEVSPACE_LOG_FORMAT=pretty` for local debugging.
 Set `DEVSPACE_LOG_SHELL_COMMANDS=1` only when you intentionally want command
 previews in logs.
 
+`DEVSPACE_TRUST_PROXY` must name the trusted reverse-proxy boundary explicitly.
+Use a hop count such as `1` when exactly one local reverse proxy sits in front of
+DevSpace, or a comma-separated IP/CIDR list such as
+`127.0.0.1,10.0.0.0/8`. Boolean `true` is intentionally rejected because it
+trusts the entire forwarded chain.
+
 ## Env-Only Example
 
 ```bash

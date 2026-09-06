@@ -1,8 +1,9 @@
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { expandHomePath } from "./roots.js";
-import type { LoggingConfig, LogFormat, LogLevel } from "./logger.js";
+import type { LoggingConfig, LogFormat, LogLevel, TrustProxyConfig } from "./logger.js";
 import type { OAuthConfig } from "./oauth-provider.js";
+import { parseCodeGraphConfig, type CodeGraphConfig } from "./codegraph-config.js";
 import { devspaceAgentsDir, devspaceSkillsDir, loadDevspaceFiles } from "./user-config.js";
 import { resolveSubagentsConfig, type SubagentsConfig } from "./local-agent-config.js";
 
@@ -31,6 +32,7 @@ export interface ServerConfig {
   devspaceAgentsDir: string;
   subagents: SubagentsConfig;
   agentDir: string;
+  codegraph: CodeGraphConfig;
   logging: LoggingConfig;
 }
 
@@ -110,6 +112,30 @@ function parseLogFormat(value: string | undefined): LogFormat {
   throw new Error(`Invalid DEVSPACE_LOG_FORMAT: ${value}`);
 }
 
+function parseTrustProxy(value: string | undefined): TrustProxyConfig {
+  const raw = value?.trim();
+  if (!raw || ["0", "false", "no", "off"].includes(raw.toLowerCase())) return false;
+
+  if (/^\d+$/.test(raw)) {
+    const hops = Number(raw);
+    if (Number.isSafeInteger(hops) && hops > 0) return hops;
+  }
+
+  if (["true", "yes", "on"].includes(raw.toLowerCase())) {
+    throw new Error(
+      "DEVSPACE_TRUST_PROXY must be an explicit proxy hop count or comma-separated IP/CIDR list; use 1 for one trusted reverse proxy.",
+    );
+  }
+
+  const proxies = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  if (proxies.length > 0) return proxies;
+
+  throw new Error(`Invalid DEVSPACE_TRUST_PROXY: ${value}`);
+}
+
 function parsePathList(value: string | undefined): string[] {
   return (
     value
@@ -152,7 +178,7 @@ function parseLoggingConfig(env: NodeJS.ProcessEnv): LoggingConfig {
     assets: parseBoolean(env.DEVSPACE_LOG_ASSETS),
     toolCalls: env.DEVSPACE_LOG_TOOL_CALLS === undefined ? true : parseBoolean(env.DEVSPACE_LOG_TOOL_CALLS),
     shellCommands: parseBoolean(env.DEVSPACE_LOG_SHELL_COMMANDS),
-    trustProxy: parseBoolean(env.DEVSPACE_TRUST_PROXY),
+    trustProxy: parseTrustProxy(env.DEVSPACE_TRUST_PROXY),
   };
 }
 
@@ -250,6 +276,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     devspaceAgentsDir: devspaceAgentsDir(env),
     subagents: resolveSubagentsConfig(files.config.subagents, env),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
+    codegraph: parseCodeGraphConfig(env, files.config),
     logging: parseLoggingConfig(env),
   };
 }

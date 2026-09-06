@@ -2,6 +2,7 @@ import type { Request } from "express";
 
 export type LogLevel = "silent" | "error" | "warn" | "info" | "debug";
 export type LogFormat = "json" | "pretty";
+export type TrustProxyConfig = false | number | string[];
 
 export interface LoggingConfig {
   level: LogLevel;
@@ -10,7 +11,7 @@ export interface LoggingConfig {
   assets: boolean;
   toolCalls: boolean;
   shellCommands: boolean;
-  trustProxy: boolean;
+  trustProxy: TrustProxyConfig;
 }
 
 type LogFields = Record<string, unknown>;
@@ -52,15 +53,7 @@ export function logEvent(
   }
 }
 
-export function requestIp(req: Request, trustProxy: boolean): string | undefined {
-  if (trustProxy) {
-    const cfConnectingIp = firstHeaderValue(req.header("cf-connecting-ip"));
-    if (cfConnectingIp) return cfConnectingIp;
-
-    const forwardedFor = firstHeaderValue(req.header("x-forwarded-for"));
-    if (forwardedFor) return forwardedFor;
-  }
-
+export function requestIp(req: Request): string | undefined {
   return req.ip ?? req.socket.remoteAddress;
 }
 
@@ -75,10 +68,6 @@ export function sessionIdPrefix(sessionId: string | undefined): string | undefin
 export function commandPreview(command: string): string {
   const normalized = command.replace(/\s+/g, " ").trim();
   return normalized.length > 120 ? `${normalized.slice(0, 117)}...` : normalized;
-}
-
-function firstHeaderValue(value: string | undefined): string | undefined {
-  return value?.split(",")[0]?.trim() || undefined;
 }
 
 function formatPretty(entry: LogFields): string {

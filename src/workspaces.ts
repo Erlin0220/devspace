@@ -293,6 +293,21 @@ export class WorkspaceRegistry {
   }
 
   resolveReadPath(workspace: Workspace, inputPath: string): WorkspaceReadPath {
+    if (inputPath.startsWith("~/") || inputPath.startsWith("~\\")) {
+      const homeSkillRead = resolveSkillReadPath(
+        workspace.skills,
+        workspace.activatedSkillDirs,
+        inputPath,
+      );
+      if (homeSkillRead) {
+        return {
+          absolutePath: homeSkillRead.absolutePath,
+          readRoots: [workspace.root, homeSkillRead.skill.baseDir],
+          skillRead: homeSkillRead,
+        };
+      }
+    }
+
     try {
       return {
         absolutePath: this.resolvePath(workspace, inputPath),

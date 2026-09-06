@@ -23,6 +23,7 @@ import {
   registerArtifactTools,
 } from "./artifact-tools.js";
 import { loadConfig, type ServerConfig, type WidgetMode } from "./config.js";
+import { createLocalExtensions, type LocalExtensions } from "./local-extensions.js";
 import {
   createOpenAIIncomingArtifactAdapter,
   type IncomingArtifactAdapter,
@@ -314,7 +315,7 @@ function sendJsonRpcError(
 
 function requestLogFields(req: Request, config: ServerConfig): Record<string, unknown> {
   return {
-    ip: requestIp(req, config.logging.trustProxy),
+    ip: requestIp(req),
     host: req.header("host"),
     userAgent: req.header("user-agent"),
     origin: req.header("origin"),
@@ -711,6 +712,7 @@ export function createMcpServer(
   processSessions: ProcessSessionManager,
   resolveLocalAgentProviders: () => LocalAgentProviderStatus[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
+  extensions: LocalExtensions = createLocalExtensions(config),
 ): McpServer {
   const server = new McpServer(
     {
@@ -721,7 +723,7 @@ export function createMcpServer(
         "Coding tools for project workspaces. Open each project or worktree once, then reuse its workspaceId.",
     },
     {
-      instructions: serverInstructions(config),
+      instructions: `${serverInstructions(config)}${extensions.instruction}`,
     },
   );
 
@@ -801,6 +803,7 @@ export function createMcpServer(
         agentProviders: z.array(workspaceLocalAgentProviderOutputSchema).optional(),
         agents: z.array(workspaceLocalAgentOutputSchema).optional(),
         skillDiagnostics: z.array(z.unknown()).optional(),
+        sharedMemoryContext: z.string().optional(),
         instruction: z.string(),
       },
       ...toolWidgetDescriptorMeta(config, "workspace"),
@@ -824,6 +827,9 @@ export function createMcpServer(
           root: workspace.root,
         });
       }
+      const sharedMemoryContext = includeBootstrapContext
+        ? await extensions.workspaceBootstrapContext(workspace)
+        : undefined;
       const cardSkills = workspace.skills
         .filter((skill) => !skill.disableModelInvocation)
         .map((skill) => ({
@@ -895,6 +901,7 @@ export function createMcpServer(
             visibleAgents.length > 0
               ? `Available subagent profiles: ${visibleAgents.map(formatVisibleAgent).join(", ")}`
               : undefined,
+            sharedMemoryContext ? `Shared project memory:\n${sharedMemoryContext}` : undefined,
             instruction,
           ].filter(Boolean).join("\n"),
         },
@@ -950,6 +957,7 @@ export function createMcpServer(
                 agentProviders: visibleAgentProviders,
                 agents: visibleAgents,
                 skillDiagnostics: workspace.skillDiagnostics,
+                ...(sharedMemoryContext ? { sharedMemoryContext } : {}),
               }
             : {}),
           instruction,
@@ -1658,6 +1666,12 @@ export function createMcpServer(
     registerCodexProcessTools(server, config, workspaces, processSessions);
   }
 
+  extensions.registerTools(server, {
+    workspaces,
+    logToolCall: (fields) => logToolCall(config, fields),
+    toolMeta: () => toolWidgetDescriptorMeta(config, "search"),
+  });
+
   if (config.artifactsEnabled && isArtifactDownloadSupportedPlatform()) {
     registerArtifactTools(server, {
       config,
@@ -1671,6 +1685,7 @@ export function createMcpServer(
 
 export interface CreateServerOptions {
   incomingArtifactAdapters?: readonly IncomingArtifactAdapter[];
+  extensions?: LocalExtensions;
 }
 
 export function createServer(
@@ -1699,6 +1714,7 @@ export function createServer(
   const workspaces = new WorkspaceRegistry(config, workspaceStore);
   const reviewCheckpoints = createReviewCheckpointManager();
   const processSessions = new ProcessSessionManager();
+  const extensions = options.extensions ?? createLocalExtensions(config);
   const localAgentProviders = buildLocalAgentProviderStatuses(
     config.subagents,
     getLocalAgentProviderAvailabilitySnapshot(),
@@ -1739,8 +1755,8 @@ export function createServer(
   }, MCP_SESSION_CLEANUP_INTERVAL_MS);
   sessionCleanupTimer.unref();
 
-  if (config.logging.trustProxy) {
-    app.set("trust proxy", true);
+  if (config.logging.trustProxy !== false) {
+    app.set("trust proxy", config.logging.trustProxy);
   }
 
   app.use((req, res, next) => {
@@ -1868,6 +1884,7 @@ export function createServer(
           processSessions,
           resolveLocalAgentProviders,
           incomingArtifactAdapters,
+          extensions,
         );
         await server.connect(transport);
       } else {
@@ -1898,6 +1915,7 @@ export function createServer(
         const results = await transports.closeAll();
         logSessionCloseResults("server_shutdown", results);
         processSessions.shutdown();
+        await extensions.close();
         oauthProvider.close();
         workspaceStore.close?.();
       })();
@@ -1925,7 +1943,9 @@ if (await isMainModule()) {
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
     console.log(`request logging: ${config.logging.requests ? "enabled" : "disabled"}`);
     console.log(`asset logging: ${config.logging.assets ? "enabled" : "disabled"}`);
-    console.log(`trust proxy: ${config.logging.trustProxy ? "enabled" : "disabled"}`);
+    console.log(
+      `trust proxy: ${config.logging.trustProxy === false ? "disabled" : JSON.stringify(config.logging.trustProxy)}`,
+    );
     const artifactDownloadStatus = !config.artifactsEnabled
       ? "disabled"
       : isArtifactDownloadSupportedPlatform()

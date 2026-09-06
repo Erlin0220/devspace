@@ -16,6 +16,7 @@ import {
   type WriteToolInput,
   type AgentToolResult,
 } from "@earendil-works/pi-coding-agent";
+import { normalizeNulRedirects } from "./process-platform.js";
 import { resolveAllowedPath } from "./roots.js";
 
 type McpContent = { type: "text"; text: string } | { type: "image"; data: string; mimeType: string };
@@ -123,7 +124,7 @@ export async function runShellTool(input: BashToolInput, context: ToolContext): 
   const timeout = input.timeout === undefined ? 30 : Math.min(input.timeout, 300);
 
   return runTool((params) => tool.execute("run_shell", params), {
-    command: input.command,
+    command: normalizeNulRedirects(input.command),
     timeout,
   }, context);
 }

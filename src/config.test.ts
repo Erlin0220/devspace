@@ -78,7 +78,15 @@ assert.equal(loadConfig({ ...baseEnv, DEVSPACE_LOG_REQUESTS: "0" }).logging.requ
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_LOG_ASSETS: "1" }).logging.assets, true);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_LOG_TOOL_CALLS: "0" }).logging.toolCalls, false);
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_LOG_SHELL_COMMANDS: "1" }).logging.shellCommands, true);
-assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TRUST_PROXY: "1" }).logging.trustProxy, true);
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_TRUST_PROXY: "1" }).logging.trustProxy, 1);
+assert.deepEqual(
+  loadConfig({ ...baseEnv, DEVSPACE_TRUST_PROXY: "127.0.0.1,10.0.0.0/8" }).logging.trustProxy,
+  ["127.0.0.1", "10.0.0.0/8"],
+);
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_TRUST_PROXY: "true" }),
+  /explicit proxy hop count or comma-separated IP\/CIDR list/,
+);
 
 assert.throws(
   () => loadConfig({ ...baseEnv, DEVSPACE_LOG_LEVEL: "trace" }),
