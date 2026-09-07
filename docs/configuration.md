@@ -90,6 +90,21 @@ MCP clients discover metadata from:
 /.well-known/oauth-authorization-server
 ```
 
+## Shared Project Memory
+
+When the optional Basic Memory integration is enabled, DevSpace keeps the memory project bound to the workspace root instead of exposing arbitrary project selection to the model. The original `ROOT` / `PROJECT` pair remains the primary mapping; additional workspace mappings can share the same Basic Memory MCP endpoint.
+
+| Variable | Purpose |
+| --- | --- |
+| `DEVSPACE_BASIC_MEMORY` | Enable the Basic Memory integration. |
+| `DEVSPACE_BASIC_MEMORY_URL` | Streamable HTTP MCP endpoint for the Basic Memory server. |
+| `DEVSPACE_BASIC_MEMORY_ROOT` | Primary local workspace root. |
+| `DEVSPACE_BASIC_MEMORY_PROJECT` | Basic Memory project for the primary root. |
+| `DEVSPACE_BASIC_MEMORY_PROJECT_MAP` | Optional semicolon-separated additional mappings in `workspace-root=project` form. |
+| `DEVSPACE_BASIC_MEMORY_TIMEOUT_MS` | Per-request timeout. Defaults to `15000`. |
+
+Worktrees inherit the mapping of their source checkout, so a worktree cannot silently switch to another memory project.
+
 ## Tool Modes
 
 `DEVSPACE_TOOL_MODE` controls the tool surface.

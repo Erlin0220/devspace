@@ -121,23 +121,22 @@ export class BasicMemoryManager {
   }
 
   supports(workspace: Workspace): boolean {
-    if (!this.config.enabled || !this.config.root) return false;
-    const projectRoot = workspace.sourceRoot ?? workspace.root;
-    return normalizePath(projectRoot) === normalizePath(this.config.root);
+    return this.routeFor(workspace) !== undefined;
   }
 
   async recall(workspace: Workspace, query: string): Promise<BasicMemoryToolResult> {
-    this.assertSupported(workspace);
+    const route = this.assertSupported(workspace);
     return this.callTool("search_notes", {
       query,
       page_size: 5,
       output_format: "text",
-      ...(this.config.project ? { project: this.config.project } : {}),
+      ...(route.project ? { project: route.project } : {}),
     });
   }
 
   async bootstrapContext(workspace: Workspace): Promise<string | undefined> {
-    if (!this.supports(workspace)) return undefined;
+    const route = this.routeFor(workspace);
+    if (!route) return undefined;
     try {
       const listing = await this.callTool("list_directory", {
         dir_name: "checkpoints",
@@ -145,7 +144,7 @@ export class BasicMemoryManager {
         sort: "updated_desc",
         page_size: 10,
         output_format: "json",
-        ...(this.config.project ? { project: this.config.project } : {}),
+        ...(route.project ? { project: route.project } : {}),
       });
       if (listing.isError) return undefined;
 
@@ -168,7 +167,7 @@ export class BasicMemoryManager {
             identifier: checkpoint.permalink,
             output_format: "json",
             include_frontmatter: false,
-            ...(this.config.project ? { project: this.config.project } : {}),
+            ...(route.project ? { project: route.project } : {}),
           }),
         ),
       );
@@ -191,7 +190,7 @@ export class BasicMemoryManager {
     workspace: Workspace,
     input: ProjectMemoryCheckpointInput,
   ): Promise<BasicMemoryToolResult> {
-    this.assertSupported(workspace);
+    const route = this.assertSupported(workspace);
     const projectRoot = workspace.sourceRoot ?? workspace.root;
     const [branch, sha] = await Promise.all([
       gitValue(["branch", "--show-current"], workspace.root),
@@ -217,7 +216,7 @@ export class BasicMemoryManager {
         ...(sha ? { git_sha: sha } : {}),
       },
       overwrite: false,
-      ...(this.config.project ? { project: this.config.project } : {}),
+      ...(route.project ? { project: route.project } : {}),
     });
   }
 
@@ -225,13 +224,25 @@ export class BasicMemoryManager {
     // Requests intentionally use short-lived MCP sessions, so there is no long-lived transport to close.
   }
 
-  private assertSupported(workspace: Workspace): void {
+  private routeFor(workspace: Workspace): { project?: string } | undefined {
+    if (!this.config.enabled) return undefined;
+    const projectRoot = normalizePath(workspace.sourceRoot ?? workspace.root);
+    if (this.config.root && projectRoot === normalizePath(this.config.root)) {
+      return { project: this.config.project };
+    }
+    const mapping = this.config.projectMappings.find((entry) => projectRoot === normalizePath(entry.root));
+    return mapping ? { project: mapping.project } : undefined;
+  }
+
+  private assertSupported(workspace: Workspace): { project?: string } {
     if (!this.config.enabled) {
       throw new Error("Basic Memory integration is disabled.");
     }
-    if (!this.supports(workspace)) {
+    const route = this.routeFor(workspace);
+    if (!route) {
       throw new Error(`Basic Memory is not configured for workspace: ${workspace.root}`);
     }
+    return route;
   }
 
   private async callTool(name: string, args: Record<string, unknown>): Promise<BasicMemoryToolResult> {

@@ -3,21 +3,28 @@ import { BasicMemoryManager, checkpointMarkdown } from "./basic-memory.js";
 import { parseBasicMemoryConfig } from "./basic-memory-config.js";
 import type { Workspace } from "./workspaces.js";
 
+const mappedGptRoot = process.platform === "win32" ? "C:\\project\\gpt" : "/project/gpt";
 const parsed = parseBasicMemoryConfig({
   DEVSPACE_BASIC_MEMORY: "1",
   DEVSPACE_BASIC_MEMORY_URL: "https://memory.example.test/mcp",
   DEVSPACE_BASIC_MEMORY_ROOT: "C:\\project\\zggmono",
   DEVSPACE_BASIC_MEMORY_PROJECT: "zggmono",
+  DEVSPACE_BASIC_MEMORY_PROJECT_MAP: `${mappedGptRoot}=gpt`,
   DEVSPACE_BASIC_MEMORY_TIMEOUT_MS: "4321",
 });
 assert.equal(parsed.enabled, true);
 assert.equal(parsed.url, "https://memory.example.test/mcp");
 assert.equal(parsed.project, "zggmono");
+assert.deepEqual(parsed.projectMappings, [{ root: mappedGptRoot, project: "gpt" }]);
 assert.equal(parsed.timeoutMs, 4321);
 
 assert.throws(
   () => parseBasicMemoryConfig({ DEVSPACE_BASIC_MEMORY: "1" }),
   /DEVSPACE_BASIC_MEMORY_URL is required/,
+);
+assert.throws(
+  () => parseBasicMemoryConfig({ DEVSPACE_BASIC_MEMORY_PROJECT_MAP: "invalid" }),
+  /Invalid DEVSPACE_BASIC_MEMORY_PROJECT_MAP entry/,
 );
 
 const markdown = checkpointMarkdown(
@@ -46,6 +53,12 @@ const manager = new BasicMemoryManager({
   url: "https://memory.example.test/mcp",
   root: process.platform === "win32" ? "C:\\project\\zggmono" : "/project/zggmono",
   project: "zggmono",
+  projectMappings: [
+    {
+      root: process.platform === "win32" ? "C:\\project\\gpt" : "/project/gpt",
+      project: "gpt",
+    },
+  ],
   timeoutMs: 1000,
 });
 const workspace = {
@@ -59,6 +72,14 @@ const workspace = {
   activatedSkillDirs: new Set<string>(),
 } satisfies Workspace;
 assert.equal(manager.supports(workspace), true);
+const gptWorkspace = {
+  ...workspace,
+  id: "ws-gpt",
+  root: process.platform === "win32" ? "C:\\project\\gpt" : "/project/gpt",
+  sourceRoot: undefined,
+  mode: "checkout",
+} satisfies Workspace;
+assert.equal(manager.supports(gptWorkspace), true);
 
 const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
 Object.defineProperty(manager, "callTool", {
@@ -92,7 +113,12 @@ Object.defineProperty(manager, "callTool", {
 const recall = await manager.recall(workspace, "workflow refresh");
 assert.equal(recall.result, "prior decision");
 assert.equal(calls[0]?.name, "search_notes");
+assert.equal(calls[0]?.args.project, "zggmono");
 assert.equal("search_type" in (calls[0]?.args ?? {}), false);
+
+const gptRecall = await manager.recall(gptWorkspace, "plugin refresh");
+assert.equal(gptRecall.result, "prior decision");
+assert.equal(calls[1]?.args.project, "gpt");
 
 calls.length = 0;
 const bootstrap = await manager.bootstrapContext(workspace);
