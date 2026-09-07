@@ -35,6 +35,7 @@ npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
 | `DEVSPACE_ALLOWED_ROOTS` | Comma-separated local roots that workspaces may open. |
 | `DEVSPACE_PUBLIC_BASE_URL` | Public origin for the server, without `/mcp`. |
 | `DEVSPACE_ALLOWED_HOSTS` | Optional Host header allowlist override. |
+| `DEVSPACE_API_TOKEN` | Optional static Bearer token for clients that support API-key authentication. Must be at least 32 characters. OAuth remains enabled for existing clients. |
 | `DEVSPACE_OAUTH_OWNER_TOKEN` | Owner password for OAuth approval. Must be at least 16 characters. |
 | `DEVSPACE_WORKTREE_ROOT` | Directory for managed Git worktrees. Defaults to `~/.devspace/worktrees`. |
 | `DEVSPACE_STATE_DIR` | Directory for SQLite state. Defaults to `~/.local/share/devspace`. |
@@ -73,7 +74,7 @@ for the supported connector shape and security boundaries.
 
 ## OAuth
 
-DevSpace uses a single-user OAuth approval flow.
+DevSpace uses a single-user OAuth approval flow by default. Set `DEVSPACE_API_TOKEN` to additionally accept a static Bearer token for trusted clients such as a ChatGPT Business custom app configured with API-key authentication. OAuth stays enabled so existing connectors continue to work.
 
 | Variable | Default |
 | --- | --- |

@@ -11,6 +11,12 @@ const baseEnv = {
   DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
 };
 
+assert.equal(loadConfig(baseEnv).apiToken, undefined);
+assert.equal(loadConfig({ ...baseEnv, DEVSPACE_API_TOKEN: "a".repeat(32) }).apiToken, "a".repeat(32));
+assert.throws(
+  () => loadConfig({ ...baseEnv, DEVSPACE_API_TOKEN: "too-short" }),
+  /DEVSPACE_API_TOKEN must be at least 32 characters/,
+);
 assert.equal(loadConfig(baseEnv).widgets, "full");
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_WIDGETS: "changes" }).widgets, "changes");
 assert.equal(loadConfig({ ...baseEnv, DEVSPACE_WIDGETS: "full" }).widgets, "full");

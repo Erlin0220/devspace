@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { access, realpath } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -1817,24 +1817,38 @@ export function createServer(
     const sessionId = req.header("mcp-session-id");
     const initializeRequest = req.method === "POST" && isInitializeRequest(req.body);
 
-    await new Promise<void>((resolve, reject) => {
-      bearerAuth(req, res, (error?: unknown) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
-    if (res.headersSent) return;
+    const authorization = req.header("authorization") ?? "";
+    const apiTokenPrefix = "Bearer ";
+    const presentedApiToken = authorization.startsWith(apiTokenPrefix)
+      ? authorization.slice(apiTokenPrefix.length)
+      : "";
+    const expectedApiToken = config.apiToken ?? "";
+    const presentedApiTokenBytes = Buffer.from(presentedApiToken);
+    const expectedApiTokenBytes = Buffer.from(expectedApiToken);
+    const apiTokenAuthorized = presentedApiTokenBytes.length > 0
+      && presentedApiTokenBytes.length === expectedApiTokenBytes.length
+      && timingSafeEqual(presentedApiTokenBytes, expectedApiTokenBytes);
 
-    if (!req.auth?.resource || !checkResourceAllowed({ requestedResource: req.auth.resource, configuredResource: resourceServerUrl })) {
-      logEvent(config.logging, "warn", "auth_denied", {
-        requestId,
-        method: req.method,
-        path: requestPath(req),
-        reason: "invalid_oauth_resource",
-        ...requestLogFields(req, config),
+    if (!apiTokenAuthorized) {
+      await new Promise<void>((resolve, reject) => {
+        bearerAuth(req, res, (error?: unknown) => {
+          if (error) reject(error);
+          else resolve();
+        });
       });
-      sendJsonRpcError(res, 401, -32001, "Unauthorized");
-      return;
+      if (res.headersSent) return;
+
+      if (!req.auth?.resource || !checkResourceAllowed({ requestedResource: req.auth.resource, configuredResource: resourceServerUrl })) {
+        logEvent(config.logging, "warn", "auth_denied", {
+          requestId,
+          method: req.method,
+          path: requestPath(req),
+          reason: "invalid_oauth_resource",
+          ...requestLogFields(req, config),
+        });
+        sendJsonRpcError(res, 401, -32001, "Unauthorized");
+        return;
+      }
     }
 
     logEvent(config.logging, "debug", "mcp_request", {
@@ -1939,7 +1953,7 @@ if (await isMainModule()) {
       `devspace listening on http://${config.host}:${config.port}/mcp`,
     );
     console.log(`allowed roots: ${config.allowedRoots.join(", ")}`);
-    console.log("auth: oauth owner-token flow required");
+    console.log(`auth: oauth owner-token flow${config.apiToken ? " + API token" : ""}`);
     console.log(`logging: ${config.logging.level} ${config.logging.format}`);
     console.log(`request logging: ${config.logging.requests ? "enabled" : "disabled"}`);
     console.log(`asset logging: ${config.logging.assets ? "enabled" : "disabled"}`);

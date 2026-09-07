@@ -13,11 +13,89 @@ import { buildLocalAgentProviderStatuses } from "./local-agent-catalog.js";
 import type { SubagentsConfig } from "./local-agent-config.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { ProcessSessionManager } from "./process-sessions.js";
-import { createMcpServer } from "./server.js";
+import { createMcpServer, createServer } from "./server.js";
 import { SqliteWorkspaceStore } from "./workspace-store.js";
 import { WorkspaceRegistry } from "./workspaces.js";
 
 const execFileAsync = promisify(execFile);
+
+test("static API token authenticates MCP initialize and rejects invalid tokens", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "devspace-api-token-test-"));
+  const apiToken = "a".repeat(32);
+  const config = loadConfig({
+    DEVSPACE_CONFIG_DIR: join(root, ".config"),
+    DEVSPACE_ALLOWED_ROOTS: root,
+    DEVSPACE_STATE_DIR: join(root, ".state"),
+    DEVSPACE_WORKTREE_ROOT: join(root, ".worktrees"),
+    DEVSPACE_AGENT_DIR: join(root, "agent"),
+    DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+    DEVSPACE_API_TOKEN: apiToken,
+    DEVSPACE_WIDGETS: "off",
+    DEVSPACE_SUBAGENTS: "0",
+    HOST: "127.0.0.1",
+    PORT: "1",
+    DEVSPACE_PUBLIC_BASE_URL: "http://127.0.0.1:1",
+  });
+  const running = createServer(config, {
+    incomingArtifactAdapters: [],
+    extensions: {
+      instruction: "",
+      registerTools() {},
+      async workspaceBootstrapContext() {
+        return undefined;
+      },
+      async close() {},
+    },
+  });
+  const httpServer = running.app.listen(0, "127.0.0.1");
+  await new Promise<void>((resolve, reject) => {
+    httpServer.once("listening", resolve);
+    httpServer.once("error", reject);
+  });
+  t.after(async () => {
+    await new Promise<void>((resolve, reject) => {
+      httpServer.close((error) => error ? reject(error) : resolve());
+    });
+    await running.close();
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const address = httpServer.address();
+  assert.ok(address && typeof address === "object");
+  const endpoint = `http://127.0.0.1:${address.port}/mcp`;
+  const initialize = {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: "2025-06-18",
+      capabilities: {},
+      clientInfo: { name: "devspace-api-token-test", version: "1.0.0" },
+    },
+  };
+  const authorized = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${apiToken}`,
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(initialize),
+  });
+  assert.equal(authorized.status, 200);
+  assert.ok(authorized.headers.get("mcp-session-id"));
+
+  const denied = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${"é".repeat(32)}`,
+      accept: "application/json, text/event-stream",
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(initialize),
+  });
+  assert.equal(denied.status, 401);
+});
 
 test("open_workspace keeps lifecycle flags out of model output and preserves complete card metadata", async (t) => {
   const providerNote = "available";

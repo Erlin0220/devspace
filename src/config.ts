@@ -16,6 +16,7 @@ const DEFAULT_ARTIFACT_MAX_FILE_BYTES = 100 * 1024 * 1024;
 export interface ServerConfig {
   host: string;
   port: number;
+  apiToken?: string;
   oauth: OAuthConfig;
   allowedRoots: string[];
   allowedHosts: string[];
@@ -85,6 +86,13 @@ function normalizeAllowedHosts(rawHosts: string[], derivedHosts: string[]): stri
 
 function parseBoolean(value: string | undefined): boolean {
   return ["1", "true", "yes", "on"].includes(value?.toLowerCase() ?? "");
+}
+
+function parseApiToken(value: string | undefined): string | undefined {
+  const token = value?.trim();
+  if (!token) return undefined;
+  if (token.length < 32) throw new Error("DEVSPACE_API_TOKEN must be at least 32 characters");
+  return token;
 }
 
 function parseToolMode(env: NodeJS.ProcessEnv): ToolMode {
@@ -253,6 +261,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
   return {
     host,
     port,
+    apiToken: parseApiToken(env.DEVSPACE_API_TOKEN),
     oauth: parseOAuthConfig(env, files.auth.ownerToken),
     allowedRoots: parseAllowedRoots(env.DEVSPACE_ALLOWED_ROOTS ?? files.config.allowedRoots),
     allowedHosts: parseAllowedHosts(env.DEVSPACE_ALLOWED_HOSTS, derivedAllowedHosts),
