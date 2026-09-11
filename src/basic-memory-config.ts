@@ -1,27 +1,36 @@
-import { resolve } from "node:path";
-
 const DEFAULT_TIMEOUT_MS = 15_000;
 
-export interface BasicMemoryProjectMapping {
-  root: string;
-  project: string;
+export interface BasicMemoryUserConfig {
+  basicMemoryEnabled?: boolean;
+  basicMemoryGlobalProject?: string;
+  basicMemoryAutoProvision?: boolean;
+  basicMemoryProjectBasePath?: string;
+  basicMemoryTimeoutMs?: number;
+}
+
+export interface BasicMemoryAuthConfig {
+  basicMemoryUrl?: string;
+  basicMemoryToken?: string;
 }
 
 export interface BasicMemoryConfig {
   enabled: boolean;
   url?: string;
-  root?: string;
-  project?: string;
-  projectMappings: BasicMemoryProjectMapping[];
+  token?: string;
+  globalProject?: string;
+  autoProvision: boolean;
+  projectBasePath?: string;
   timeoutMs: number;
+  legacyMappingConfigured: boolean;
 }
 
-function parseBoolean(value: string | undefined): boolean {
-  return ["1", "true", "yes", "on"].includes(value?.toLowerCase() ?? "");
+function parseBoolean(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined) return fallback;
+  return ["1", "true", "yes", "on"].includes(value.toLowerCase());
 }
 
-function parsePositiveInteger(value: string | undefined, fallback: number, name: string): number {
-  if (!value) return fallback;
+function parsePositiveInteger(value: string | number | undefined, fallback: number, name: string): number {
+  if (value === undefined || value === "") return fallback;
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {
     throw new Error(`Invalid ${name}: ${value}`);
@@ -29,31 +38,46 @@ function parsePositiveInteger(value: string | undefined, fallback: number, name:
   return parsed;
 }
 
-function parseProjectMappings(value: string | undefined): BasicMemoryProjectMapping[] {
-  if (!value?.trim()) return [];
-  return value.split(";").map((entry) => {
-    const separator = entry.lastIndexOf("=");
-    const root = entry.slice(0, separator).trim();
-    const project = entry.slice(separator + 1).trim();
-    if (separator < 1 || !root || !project) {
-      throw new Error(`Invalid DEVSPACE_BASIC_MEMORY_PROJECT_MAP entry: ${entry}`);
-    }
-    return { root: resolve(root), project };
-  });
+function configuredString(environmentValue: string | undefined, persistedValue: string | undefined): string | undefined {
+  const value = environmentValue?.trim() || persistedValue?.trim();
+  return value || undefined;
 }
 
-export function parseBasicMemoryConfig(env: NodeJS.ProcessEnv = process.env): BasicMemoryConfig {
-  const enabled = parseBoolean(env.DEVSPACE_BASIC_MEMORY);
-  const url = env.DEVSPACE_BASIC_MEMORY_URL?.trim();
-  const root = env.DEVSPACE_BASIC_MEMORY_ROOT?.trim();
-  const project = env.DEVSPACE_BASIC_MEMORY_PROJECT?.trim();
-  const projectMappings = parseProjectMappings(env.DEVSPACE_BASIC_MEMORY_PROJECT_MAP);
+export function parseBasicMemoryConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  persisted: BasicMemoryUserConfig = {},
+  auth: BasicMemoryAuthConfig = {},
+): BasicMemoryConfig {
+  const enabled = parseBoolean(env.DEVSPACE_BASIC_MEMORY, persisted.basicMemoryEnabled ?? false);
+  const url = configuredString(env.DEVSPACE_BASIC_MEMORY_URL, auth.basicMemoryUrl);
+  const token = configuredString(env.DEVSPACE_BASIC_MEMORY_TOKEN, auth.basicMemoryToken);
+  const globalProject = configuredString(
+    env.DEVSPACE_BASIC_MEMORY_GLOBAL_PROJECT,
+    persisted.basicMemoryGlobalProject,
+  );
+  const projectBasePath = configuredString(
+    env.DEVSPACE_BASIC_MEMORY_PROJECT_BASE_PATH,
+    persisted.basicMemoryProjectBasePath,
+  );
+  const autoProvision = parseBoolean(
+    env.DEVSPACE_BASIC_MEMORY_AUTO_PROVISION,
+    persisted.basicMemoryAutoProvision ?? true,
+  );
+  const timeoutMs = parsePositiveInteger(
+    env.DEVSPACE_BASIC_MEMORY_TIMEOUT_MS ?? persisted.basicMemoryTimeoutMs,
+    DEFAULT_TIMEOUT_MS,
+    "DEVSPACE_BASIC_MEMORY_TIMEOUT_MS",
+  );
+  const legacyMappingConfigured = Boolean(
+    env.DEVSPACE_BASIC_MEMORY_ROOT?.trim() ||
+      env.DEVSPACE_BASIC_MEMORY_PROJECT?.trim() ||
+      env.DEVSPACE_BASIC_MEMORY_PROJECT_MAP?.trim(),
+  );
 
   if (enabled && !url) {
-    throw new Error("DEVSPACE_BASIC_MEMORY_URL is required when DEVSPACE_BASIC_MEMORY is enabled.");
-  }
-  if (enabled && !root) {
-    throw new Error("DEVSPACE_BASIC_MEMORY_ROOT is required when DEVSPACE_BASIC_MEMORY is enabled.");
+    throw new Error(
+      "Basic Memory is enabled but no endpoint is configured. Set DEVSPACE_BASIC_MEMORY_URL or basicMemoryUrl in auth.json.",
+    );
   }
 
   if (url) {
@@ -64,16 +88,18 @@ export function parseBasicMemoryConfig(env: NodeJS.ProcessEnv = process.env): Ba
     }
   }
 
+  if (token && token.length < 32) {
+    throw new Error("DEVSPACE_BASIC_MEMORY_TOKEN must be at least 32 characters when configured.");
+  }
+
   return {
     enabled,
     url,
-    root: root ? resolve(root) : undefined,
-    project: project || undefined,
-    projectMappings,
-    timeoutMs: parsePositiveInteger(
-      env.DEVSPACE_BASIC_MEMORY_TIMEOUT_MS,
-      DEFAULT_TIMEOUT_MS,
-      "DEVSPACE_BASIC_MEMORY_TIMEOUT_MS",
-    ),
+    token,
+    globalProject,
+    autoProvision,
+    projectBasePath,
+    timeoutMs,
+    legacyMappingConfigured,
   };
 }

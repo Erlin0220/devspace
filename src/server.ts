@@ -803,7 +803,6 @@ export function createMcpServer(
         agentProviders: z.array(workspaceLocalAgentProviderOutputSchema).optional(),
         agents: z.array(workspaceLocalAgentOutputSchema).optional(),
         skillDiagnostics: z.array(z.unknown()).optional(),
-        sharedMemoryContext: z.string().optional(),
         instruction: z.string(),
       },
       ...toolWidgetDescriptorMeta(config, "workspace"),
@@ -827,9 +826,6 @@ export function createMcpServer(
           root: workspace.root,
         });
       }
-      const sharedMemoryContext = includeBootstrapContext
-        ? await extensions.workspaceBootstrapContext(workspace)
-        : undefined;
       const cardSkills = workspace.skills
         .filter((skill) => !skill.disableModelInvocation)
         .map((skill) => ({
@@ -901,7 +897,6 @@ export function createMcpServer(
             visibleAgents.length > 0
               ? `Available subagent profiles: ${visibleAgents.map(formatVisibleAgent).join(", ")}`
               : undefined,
-            sharedMemoryContext ? `Shared project memory:\n${sharedMemoryContext}` : undefined,
             instruction,
           ].filter(Boolean).join("\n"),
         },
@@ -957,7 +952,6 @@ export function createMcpServer(
                 agentProviders: visibleAgentProviders,
                 agents: visibleAgents,
                 skillDiagnostics: workspace.skillDiagnostics,
-                ...(sharedMemoryContext ? { sharedMemoryContext } : {}),
               }
             : {}),
           instruction,

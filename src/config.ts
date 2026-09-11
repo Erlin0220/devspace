@@ -4,6 +4,7 @@ import { expandHomePath } from "./roots.js";
 import type { LoggingConfig, LogFormat, LogLevel, TrustProxyConfig } from "./logger.js";
 import type { OAuthConfig } from "./oauth-provider.js";
 import { parseCodeGraphConfig, type CodeGraphConfig } from "./codegraph-config.js";
+import { parseBasicMemoryConfig, type BasicMemoryConfig } from "./basic-memory-config.js";
 import { devspaceAgentsDir, devspaceSkillsDir, loadDevspaceFiles } from "./user-config.js";
 import { resolveSubagentsConfig, type SubagentsConfig } from "./local-agent-config.js";
 
@@ -34,6 +35,7 @@ export interface ServerConfig {
   subagents: SubagentsConfig;
   agentDir: string;
   codegraph: CodeGraphConfig;
+  basicMemory: BasicMemoryConfig;
   logging: LoggingConfig;
 }
 
@@ -286,6 +288,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     subagents: resolveSubagentsConfig(files.config.subagents, env),
     agentDir: resolve(expandHomePath(env.DEVSPACE_AGENT_DIR ?? files.config.agentDir ?? defaultAgentDir())),
     codegraph: parseCodeGraphConfig(env, files.config),
+    basicMemory: parseBasicMemoryConfig(env, files.config, files.auth),
     logging: parseLoggingConfig(env),
   };
 }

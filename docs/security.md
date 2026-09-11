@@ -40,6 +40,8 @@ reach.
 ~/.devspace/auth.json
 ```
 
+On Windows, DevSpace removes inherited ACLs from this file and grants access only to the current user, SYSTEM, and Administrators. On POSIX systems it is written with mode `0600`.
+
 When an MCP client connects, DevSpace shows an approval page. Enter the Owner
 password only when you intentionally want that client to access this server.
 

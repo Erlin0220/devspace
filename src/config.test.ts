@@ -177,12 +177,18 @@ writeFileSync(
     subagents: true,
     artifactsEnabled: true,
     artifactMaxFileBytes: 321,
+    basicMemoryEnabled: true,
+    basicMemoryGlobalProject: "gpt",
+    basicMemoryAutoProvision: true,
+    basicMemoryTimeoutMs: 2468,
   }),
 );
 writeFileSync(
   join(configDir, "auth.json"),
   JSON.stringify({
     ownerToken: "persisted-owner-token-long-enough",
+    basicMemoryUrl: "https://memory.example.test/mcp",
+    basicMemoryToken: "persisted-basic-memory-token-long-enough-123456",
   }),
 );
 
@@ -194,6 +200,16 @@ assert.equal(fileConfig.subagents.enabled, true);
 assert.equal(fileConfig.subagents.providers.length, 7);
 assert.equal(fileConfig.artifactsEnabled, true);
 assert.equal(fileConfig.artifactMaxFileBytes, 321);
+assert.deepEqual(fileConfig.basicMemory, {
+  enabled: true,
+  url: "https://memory.example.test/mcp",
+  token: "persisted-basic-memory-token-long-enough-123456",
+  globalProject: "gpt",
+  autoProvision: true,
+  projectBasePath: undefined,
+  timeoutMs: 2468,
+  legacyMappingConfigured: false,
+});
 assert.deepEqual(fileConfig.allowedHosts, [
   "localhost",
   "127.0.0.1",

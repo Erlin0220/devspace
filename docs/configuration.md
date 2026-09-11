@@ -24,6 +24,8 @@ npx @waishnav/devspace serve
 npx @waishnav/devspace doctor
 npx @waishnav/devspace config get
 npx @waishnav/devspace config set publicBaseUrl https://devspace.example.com
+npx @waishnav/devspace config set basicMemoryEnabled true
+npx @waishnav/devspace config set basicMemoryGlobalProject gpt
 ```
 
 ## Core Environment Variables
@@ -92,18 +94,29 @@ MCP clients discover metadata from:
 
 ## Shared Project Memory
 
-When the optional Basic Memory integration is enabled, DevSpace keeps the memory project bound to the workspace root instead of exposing arbitrary project selection to the model. The original `ROOT` / `PROJECT` pair remains the primary mapping; additional workspace mappings can share the same Basic Memory MCP endpoint.
+When the optional Basic Memory integration is enabled, DevSpace derives a deterministic project discovery identity from the workspace source checkout. A normalized Git `origin` is preferred so SSH/HTTPS clones of the same repository converge; repositories without an origin fall back to the canonical real filesystem path. New Basic Memory projects use a readable `<repo>-<identity-hash>` name, so unrelated repositories with the same directory name cannot silently share memory. Once a project is resolved, DevSpace prefers Basic Memory's immutable `project_id` for subsequent calls. Managed worktrees use `sourceRoot` and therefore share the source project's identity. The model never chooses a Basic Memory project directly.
 
-| Variable | Purpose |
-| --- | --- |
-| `DEVSPACE_BASIC_MEMORY` | Enable the Basic Memory integration. |
-| `DEVSPACE_BASIC_MEMORY_URL` | Streamable HTTP MCP endpoint for the Basic Memory server. |
-| `DEVSPACE_BASIC_MEMORY_ROOT` | Primary local workspace root. |
-| `DEVSPACE_BASIC_MEMORY_PROJECT` | Basic Memory project for the primary root. |
-| `DEVSPACE_BASIC_MEMORY_PROJECT_MAP` | Optional semicolon-separated additional mappings in `workspace-root=project` form. |
-| `DEVSPACE_BASIC_MEMORY_TIMEOUT_MS` | Per-request timeout. Defaults to `15000`. |
+Existing legacy projects with plain names can be retained by adding a one-time `devspace-project-identity` marker in that Basic Memory project. The configured global project name is reserved and is never reused as a workspace project. Project discovery is read-only: `open_workspace` does not contact Basic Memory at all, and `project_memory_recall` never creates a project. If the project does not exist yet, the first `project_memory_checkpoint` creates it automatically and verifies that the new project is usable before writing the checkpoint. This keeps read-only tools read-only while removing the old requirement to edit a per-project mapping and restart DevSpace whenever a repository is added.
 
-Worktrees inherit the mapping of their source checkout, so a worktree cannot silently switch to another memory project.
+Automatic provisioning requires one deployment-level `basicMemoryProjectBasePath` that points to the Basic Memory server's project parent directory. DevSpace never infers this server-side filesystem path from existing projects. If it is missing, project recall remains read-only and checkpoint reports an actionable configuration error instead of guessing storage layout.
+
+Persisted settings live in `~/.devspace/config.json`; the Basic Memory endpoint and optional bearer token are stored separately in `~/.devspace/auth.json`. Prefer a normal HTTPS endpoint protected by a bearer token over putting a secret in the URL path.
+
+| Persisted key | Environment override | Purpose |
+| --- | --- | --- |
+| `basicMemoryEnabled` | `DEVSPACE_BASIC_MEMORY` | Enable the Basic Memory integration. |
+| `basicMemoryUrl` in `auth.json` | `DEVSPACE_BASIC_MEMORY_URL` | Streamable HTTP MCP endpoint. |
+| `basicMemoryToken` in `auth.json` | `DEVSPACE_BASIC_MEMORY_TOKEN` | Optional bearer token sent in the HTTP `Authorization` header. |
+| `basicMemoryGlobalProject` | `DEVSPACE_BASIC_MEMORY_GLOBAL_PROJECT` | Fixed global memory project exposed through `global_memory_recall` / `global_memory_checkpoint`; reserved from workspace routing. |
+| `basicMemoryAutoProvision` | `DEVSPACE_BASIC_MEMORY_AUTO_PROVISION` | Allow the first project checkpoint to create a missing project. Defaults to `true`. |
+| `basicMemoryProjectBasePath` | `DEVSPACE_BASIC_MEMORY_PROJECT_BASE_PATH` | Server-side parent directory for automatically created projects; required when auto-provisioning is enabled. |
+| `basicMemoryTimeoutMs` | `DEVSPACE_BASIC_MEMORY_TIMEOUT_MS` | Per-operation timeout. Defaults to `15000`. |
+
+Configure non-secret values through `devspace config set <key> <value>`. Set the bearer token with `devspace config set basicMemoryToken --stdin` so it is never placed in process arguments or shell history; `DEVSPACE_BASIC_MEMORY_TOKEN` remains available for managed environments. `basicMemoryUrl` and `basicMemoryToken` are written to `auth.json`; the other keys are written to `config.json`. On Windows, DevSpace removes inherited ACLs from `auth.json` and grants access only to the current user, SYSTEM, and Administrators. Configuration changes require restarting the DevSpace server, but creating or opening a new repository no longer requires any configuration change or restart.
+
+`DEVSPACE_BASIC_MEMORY_ROOT`, `DEVSPACE_BASIC_MEMORY_PROJECT`, and `DEVSPACE_BASIC_MEMORY_PROJECT_MAP` are legacy routing variables. They are ignored by project resolution and reported by `devspace doctor` so they can be removed after migration. Existing Basic Memory projects are discovered from Basic Memory itself, which remains the project-memory source of truth.
+
+`open_workspace` stays independent of Basic Memory network health. Historical context is fetched only when the model calls `project_memory_recall`, while verified durable handoff is written through `project_memory_checkpoint`. Each recall, checkpoint, or doctor operation uses one short-lived Basic Memory MCP session.
 
 ## Tool Modes
 

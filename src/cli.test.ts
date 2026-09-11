@@ -30,6 +30,65 @@ for (const flag of ["-v", "--version"]) {
   assert.equal(output, packageJson.version);
 }
 
+const memoryConfigRoot = mkdtempSync(join(tmpdir(), "devspace-cli-memory-config-test-"));
+try {
+  const memoryConfigDir = join(memoryConfigRoot, ".devspace");
+  const memoryEnv = { ...process.env, DEVSPACE_CONFIG_DIR: memoryConfigDir };
+  const setConfig = (key: string, value: string) => execFileSync(
+    "node",
+    ["--import", "tsx", "src/cli.ts", "config", "set", key, value],
+    { encoding: "utf8", env: memoryEnv },
+  );
+  setConfig("basicMemoryEnabled", "true");
+  setConfig("basicMemoryGlobalProject", "gpt");
+  setConfig("basicMemoryAutoProvision", "true");
+  setConfig("basicMemoryProjectBasePath", "/srv/shared-memory");
+  setConfig("basicMemoryTimeoutMs", "2500");
+  setConfig("basicMemoryUrl", "https://memory.example.test/mcp");
+  assert.throws(() => execFileSync(
+    "node",
+    [
+      "--import",
+      "tsx",
+      "src/cli.ts",
+      "config",
+      "set",
+      "basicMemoryToken",
+      "test-bearer-token-that-must-not-appear-in-argv-123456",
+    ],
+    { encoding: "utf8", env: memoryEnv, stdio: "pipe" },
+  ));
+  execFileSync(
+    "node",
+    ["--import", "tsx", "src/cli.ts", "config", "set", "basicMemoryToken", "--stdin"],
+    {
+      encoding: "utf8",
+      env: memoryEnv,
+      input: "test-bearer-token-that-is-long-enough-1234567890\n",
+    },
+  );
+
+  const storedConfig = JSON.parse(readFileSync(join(memoryConfigDir, "config.json"), "utf8")) as Record<string, unknown>;
+  const storedAuth = JSON.parse(readFileSync(join(memoryConfigDir, "auth.json"), "utf8")) as Record<string, unknown>;
+  assert.equal(storedConfig.basicMemoryEnabled, true);
+  assert.equal(storedConfig.basicMemoryGlobalProject, "gpt");
+  assert.equal(storedConfig.basicMemoryAutoProvision, true);
+  assert.equal(storedConfig.basicMemoryProjectBasePath, "/srv/shared-memory");
+  assert.equal(storedConfig.basicMemoryTimeoutMs, 2500);
+  assert.equal(storedAuth.basicMemoryUrl, "https://memory.example.test/mcp");
+  assert.equal(storedAuth.basicMemoryToken, "test-bearer-token-that-is-long-enough-1234567890");
+
+  const printedConfig = execFileSync(
+    "node",
+    ["--import", "tsx", "src/cli.ts", "config", "get"],
+    { encoding: "utf8", env: memoryEnv },
+  );
+  assert.doesNotMatch(printedConfig, /memory\.example\.test/);
+  assert.doesNotMatch(printedConfig, /test-bearer-token/);
+} finally {
+  rmSync(memoryConfigRoot, { recursive: true, force: true });
+}
+
 const root = mkdtempSync(join(tmpdir(), "devspace-cli-agents-test-"));
 try {
   const configDir = join(root, ".devspace");

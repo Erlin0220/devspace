@@ -7,6 +7,8 @@ import * as prompts from "@clack/prompts";
 import { getShellConfig } from "@earendil-works/pi-coding-agent";
 import { satisfies } from "semver";
 import { loadConfig } from "./config.js";
+import { BasicMemoryManager } from "./basic-memory.js";
+import { parseBasicMemoryConfig } from "./basic-memory-config.js";
 import { resolveCliWorkspaceContext } from "./cli-workspace.js";
 import { resolveSubagentsConfig } from "./local-agent-config.js";
 import {
@@ -50,7 +52,7 @@ import {
   writeDevspaceConfig,
   type DevspaceUserConfig,
 } from "./user-config.js";
-import { expandHomePath } from "./roots.js";
+import { expandHomePath, isPathInsideRoot } from "./roots.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 
 type Command = "serve" | "init" | "doctor" | "config" | "agents" | "help" | "version";
@@ -75,7 +77,7 @@ async function main(argv: string[]): Promise<void> {
       await runDoctor();
       return;
     case "config":
-      runConfigCommand(args);
+      await runConfigCommand(args);
       return;
     case "agents":
       await runAgentsCommand(args);
@@ -227,6 +229,7 @@ async function runInit({ force }: { force: boolean }): Promise<void> {
       subagents,
     };
     const auth = {
+      ...files.auth,
       ownerToken: files.auth.ownerToken ?? generateOwnerToken(),
     };
 
@@ -331,8 +334,10 @@ async function runDoctor(): Promise<void> {
   console.log(`Bash shell: ${checkBashShell()}`);
   console.log(`SQLite native dependency: ${checkSqliteNative()}`);
 
+  let resolvedConfig: ReturnType<typeof loadConfig> | undefined;
   try {
-    const config = loadConfig();
+    resolvedConfig = loadConfig();
+    const config = resolvedConfig;
     console.log(`Local MCP URL: http://${config.host}:${config.port}/mcp`);
     console.log(`Public MCP URL: ${new URL("/mcp", config.publicBaseUrl).toString()}`);
     console.log(`Allowed roots: ${config.allowedRoots.join(", ")}`);
@@ -346,9 +351,51 @@ async function runDoctor(): Promise<void> {
   } catch (error) {
     console.log(`Config status: ${error instanceof Error ? error.message : String(error)}`);
   }
+
+  try {
+    const memory = new BasicMemoryManager(
+      resolvedConfig?.basicMemory ?? parseBasicMemoryConfig(process.env, files.config, files.auth),
+    );
+    const cwd = resolve(process.cwd());
+    const projectRoot = resolvedConfig?.allowedRoots.some((root) => isPathInsideRoot(cwd, root)) ? cwd : undefined;
+    const status = await memory.status(projectRoot);
+    if (!status.enabled) {
+      console.log("Basic Memory: disabled");
+    } else {
+      console.log(
+        `Basic Memory: ${status.reachable ? "ok" : "unavailable"}` +
+          `${status.version ? ` (${status.version})` : ""}` +
+          `${status.endpointOrigin ? ` via ${status.endpointOrigin}` : ""}`,
+      );
+      console.log(`Basic Memory projects: ${status.projectCount ?? "unknown"}`);
+      console.log(`Basic Memory authentication: ${status.authentication}`);
+      console.log(`Basic Memory global project: ${status.globalProject ?? "not configured"}`);
+      const workspaceProject = status.workspaceProject;
+      if (workspaceProject) {
+        console.log(
+          `Basic Memory current project: ${workspaceProject.name} (` +
+            `${workspaceProject.exists
+              ? "ready"
+              : workspaceProject.willAutoProvision
+                ? "will auto-create on first checkpoint"
+                : "missing; auto-provision unavailable"})`,
+        );
+      }
+      console.log(`Basic Memory project base: ${status.projectBase}`);
+      if (status.legacyMappingConfigured) {
+        console.log(
+          "Basic Memory legacy mapping: ignored; remove DEVSPACE_BASIC_MEMORY_ROOT, " +
+            "DEVSPACE_BASIC_MEMORY_PROJECT, and DEVSPACE_BASIC_MEMORY_PROJECT_MAP after migration.",
+        );
+      }
+    }
+    await memory.close();
+  } catch (error) {
+    console.log(`Basic Memory: unavailable (${error instanceof Error ? error.message : String(error)})`);
+  }
 }
 
-function runConfigCommand(args: string[]): void {
+async function runConfigCommand(args: string[]): Promise<void> {
   const [subcommand, key, ...rest] = args;
   const files = loadDevspaceFiles();
 
@@ -360,20 +407,66 @@ function runConfigCommand(args: string[]): void {
   if (subcommand !== "set") {
     throw new Error(`Unknown config command: ${subcommand}`);
   }
-  if (key !== "publicBaseUrl") {
-    throw new Error("Only `devspace config set publicBaseUrl <url|null>` is supported right now.");
+  if (!key) throw new Error("Missing config key.");
+
+  if (key === "basicMemoryToken") {
+    if (rest.length !== 1 || rest[0] !== "--stdin") {
+      throw new Error("Use `devspace config set basicMemoryToken --stdin` so the token is not exposed in process arguments or shell history.");
+    }
+    const nextAuth = { ...files.auth };
+    const normalized = normalizeOptionalSecret(await readStdinValue(), key, 32);
+    if (normalized === null) delete nextAuth.basicMemoryToken;
+    else nextAuth.basicMemoryToken = normalized;
+    writeDevspaceAuth(nextAuth);
+    console.log(`Updated ${files.authPath}`);
+    console.log("Restart DevSpace to apply configuration changes.");
+    return;
   }
 
   const value = rest.join(" ").trim();
-  if (!value) {
-    throw new Error("Missing publicBaseUrl value.");
+  if (!value) throw new Error(`Missing ${key} value.`);
+
+  if (key === "basicMemoryUrl") {
+    const nextAuth = { ...files.auth };
+    const normalized = normalizeOptionalHttpUrl(value, key);
+    if (normalized === null) delete nextAuth.basicMemoryUrl;
+    else nextAuth.basicMemoryUrl = normalized;
+    writeDevspaceAuth(nextAuth);
+    console.log(`Updated ${files.authPath}`);
+    console.log("Restart DevSpace to apply configuration changes.");
+    return;
   }
 
-  writeDevspaceConfig({
-    ...files.config,
-    publicBaseUrl: normalizeOptionalPublicBaseUrl(value),
-  });
+  const nextConfig = { ...files.config };
+  switch (key) {
+    case "publicBaseUrl":
+      nextConfig.publicBaseUrl = normalizeOptionalPublicBaseUrl(value);
+      break;
+    case "basicMemoryEnabled":
+      nextConfig.basicMemoryEnabled = parseConfigBoolean(value, key);
+      break;
+    case "basicMemoryGlobalProject":
+      setOptionalConfigString(nextConfig, "basicMemoryGlobalProject", value);
+      break;
+    case "basicMemoryAutoProvision":
+      nextConfig.basicMemoryAutoProvision = parseConfigBoolean(value, key);
+      break;
+    case "basicMemoryProjectBasePath":
+      setOptionalConfigString(nextConfig, "basicMemoryProjectBasePath", value);
+      break;
+    case "basicMemoryTimeoutMs":
+      nextConfig.basicMemoryTimeoutMs = parseConfigPositiveInteger(value, key);
+      break;
+    default:
+      throw new Error(
+        "Supported config keys: publicBaseUrl, basicMemoryEnabled, basicMemoryUrl, basicMemoryToken, " +
+          "basicMemoryGlobalProject, basicMemoryAutoProvision, basicMemoryProjectBasePath, basicMemoryTimeoutMs.",
+      );
+  }
+
+  writeDevspaceConfig(nextConfig);
   console.log(`Updated ${files.configPath}`);
+  console.log("Restart DevSpace to apply configuration changes.");
 }
 
 function printHelp(): void {
@@ -387,7 +480,12 @@ function printHelp(): void {
       "  devspace init            Create or update ~/.devspace/config.json and auth.json",
       "  devspace doctor          Show config, runtime, and native dependency status",
       "  devspace config get      Print persisted config",
-      "  devspace config set publicBaseUrl <url|null>",
+      "  devspace config set <key> <value>",
+      "                           Keys: publicBaseUrl, basicMemoryEnabled, basicMemoryUrl,",
+      "  devspace config set basicMemoryToken --stdin",
+      "                           Read the Basic Memory token from stdin (never argv)",
+      "                           Other keys: basicMemoryGlobalProject, basicMemoryAutoProvision,",
+      "                           basicMemoryProjectBasePath, basicMemoryTimeoutMs",
       "  devspace agents ls       List subagent sessions",
       "  devspace agents run <profile-or-provider> [--model <model>] [--effort <level>] <prompt>",
       "  devspace agents continue <id> [--model <model>] [--effort <level>] <prompt>",
@@ -641,6 +739,52 @@ function normalizeOptionalPublicBaseUrl(value: string): string | null {
   if (!trimmed || trimmed === "null" || trimmed === "none") return null;
 
   return normalizePublicBaseUrl(trimmed);
+}
+
+function normalizeOptionalHttpUrl(value: string, name: string): string | null {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "null" || trimmed === "none") return null;
+  const parsed = new URL(trimmed);
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error(`${name} must use http or https.`);
+  }
+  return parsed.toString();
+}
+
+async function readStdinValue(): Promise<string> {
+  let value = "";
+  for await (const chunk of input) value += String(chunk);
+  return value.trim();
+}
+
+function normalizeOptionalSecret(value: string, name: string, minimumLength: number): string | null {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "null" || trimmed === "none") return null;
+  if (trimmed.length < minimumLength) throw new Error(`${name} must be at least ${minimumLength} characters.`);
+  return trimmed;
+}
+
+function parseConfigBoolean(value: string, name: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  throw new Error(`${name} must be true or false.`);
+}
+
+function parseConfigPositiveInteger(value: string, name: string): number {
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer.`);
+  return parsed;
+}
+
+function setOptionalConfigString<K extends "basicMemoryGlobalProject" | "basicMemoryProjectBasePath">(
+  config: DevspaceUserConfig,
+  key: K,
+  value: string,
+): void {
+  const normalized = value.trim();
+  if (!normalized || normalized === "null" || normalized === "none") delete config[key];
+  else config[key] = normalized;
 }
 
 function normalizePublicBaseUrl(value: string): string {

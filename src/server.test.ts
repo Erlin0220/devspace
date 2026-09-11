@@ -41,9 +41,6 @@ test("static API token authenticates MCP initialize and rejects invalid tokens",
     extensions: {
       instruction: "",
       registerTools() {},
-      async workspaceBootstrapContext() {
-        return undefined;
-      },
       async close() {},
     },
   });

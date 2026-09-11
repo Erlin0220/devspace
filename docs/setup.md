@@ -124,7 +124,7 @@ The default config files are:
 ~/.devspace/auth.json
 ```
 
-Keep `auth.json` private.
+Keep `auth.json` private. On Windows, DevSpace removes inherited ACLs from this file and grants access only to the current user, SYSTEM, and Administrators; on POSIX systems it is written with mode `0600`.
 
 ## Check Your Setup
 
