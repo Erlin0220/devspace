@@ -55,7 +55,7 @@ import {
 import { expandHomePath, isPathInsideRoot } from "./roots.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 
-type Command = "serve" | "init" | "doctor" | "config" | "agents" | "help" | "version";
+type Command = "serve" | "init" | "doctor" | "config" | "agents" | "desktop" | "help" | "version";
 const require = createRequire(import.meta.url);
 const SUPPORTED_NODE_RANGE = ">=20.12 <27";
 
@@ -82,6 +82,12 @@ async function main(argv: string[]): Promise<void> {
     case "agents":
       await runAgentsCommand(args);
       return;
+    case "desktop": {
+      await ensureConfigured();
+      const { runDesktopCommand } = await import("./desktop-windows.js");
+      await runDesktopCommand(args);
+      return;
+    }
     case "help":
       printHelp();
       return;
@@ -93,7 +99,7 @@ async function main(argv: string[]): Promise<void> {
 
 function normalizeCommand(command: string | undefined): Command {
   if (!command || command === "serve" || command === "start") return "serve";
-  if (command === "init" || command === "doctor" || command === "config" || command === "agents") return command;
+  if (command === "init" || command === "doctor" || command === "config" || command === "agents" || command === "desktop") return command;
   if (command === "help" || command === "--help" || command === "-h") return "help";
   if (command === "version" || command === "--version" || command === "-v") return "version";
   throw new Error(`Unknown command: ${command}`);
@@ -491,6 +497,8 @@ function printHelp(): void {
       "  devspace agents continue <id> [--model <model>] [--effort <level>] <prompt>",
       "  devspace agents show <id>",
       "  devspace agents daemon <status|stop|logs>",
+      "  devspace desktop <install|status|start|stop|restart|uninstall>",
+      "                           Manage native Windows background startup and system tray",
       "  devspace -v, --version   Print the installed version",
       "",
       "For temporary tunnels:",
