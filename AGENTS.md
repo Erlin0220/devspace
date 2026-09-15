@@ -1,5 +1,12 @@
 # DevSpace
 
+## Personal stable overlay
+
+This checkout adds the isolated Personal Overlay described in `personal/README.md`.
+For Personal changes, read `personal/AGENTS.md`. Its authoritative stable release
+and fixed desktop snapshot are recorded in `personal/upstream.json`; historical
+local tags and the connector display name are not upstream version identifiers.
+
 DevSpace is a local development execution layer for MCP hosts such as ChatGPT and Claude. It gives a remote host workspace-scoped tools for reading, editing, searching, running commands, managing Git worktrees, reviewing changes, and coordinating bounded subagents on the user's machine.
 
 Pi's SDK currently provides mature local coding primitives. DevSpace wraps those primitives in a Streamable HTTP MCP server and adds the product-specific boundaries around them: approved roots, workspace state, instructions, process sessions, worktrees, artifacts, review checkpoints, widgets, and subagent execution.
