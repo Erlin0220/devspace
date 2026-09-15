@@ -95,6 +95,7 @@ interface RunningServer {
   app: ReturnType<typeof createMcpExpressApp>;
   config: ServerConfig;
   localAgentProviders: LocalAgentProviderStatus[];
+  runningProcessCount(): number;
   close(): Promise<void>;
 }
 
@@ -560,6 +561,13 @@ function processToolResponse(
   };
 }
 
+function processWait(waitTimeMs: number | undefined, yieldTimeMs: number | undefined): number | undefined {
+  if (waitTimeMs !== undefined && yieldTimeMs !== undefined && waitTimeMs !== yieldTimeMs) {
+    throw new Error("waitTimeMs and yieldTimeMs must match when both are provided");
+  }
+  return waitTimeMs ?? yieldTimeMs;
+}
+
 function registerCodexProcessTools(
   server: McpServer,
   config: ServerConfig,
@@ -586,6 +594,8 @@ function registerCodexProcessTools(
           .string()
           .optional()
           .describe("Working directory relative to the workspace root. Defaults to the workspace root."),
+        waitTimeMs: z.number().int().min(0).max(30_000).optional()
+          .describe("Milliseconds to wait before returning. Defaults to 10000. Commands belong to this runtime, not persistent desktop services."),
         yieldTimeMs: z
           .number()
           .int()
@@ -605,7 +615,7 @@ function registerCodexProcessTools(
       ...toolWidgetDescriptorMeta(config, "shell"),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, cmd, tty, columns, rows, workingDirectory, yieldTimeMs, maxOutputTokens }) => {
+    async ({ workspaceId, cmd, tty, columns, rows, workingDirectory, waitTimeMs, yieldTimeMs, maxOutputTokens }) => {
       const startedAt = performance.now();
       const workspace = workspaces.getWorkspace(workspaceId);
       const cwd = workspaces.resolveWorkingDirectory(workspace, workingDirectory);
@@ -617,7 +627,7 @@ function registerCodexProcessTools(
         tty,
         columns,
         rows,
-        yieldTimeMs,
+        yieldTimeMs: processWait(waitTimeMs, yieldTimeMs),
         maxOutputTokens,
       });
 
@@ -654,6 +664,8 @@ function registerCodexProcessTools(
         chars: z.string().optional().describe("Characters to write. Omit or pass an empty string to poll."),
         columns: z.number().int().min(1).max(1_000).optional().describe("Resize a PTY to this width."),
         rows: z.number().int().min(1).max(1_000).optional().describe("Resize a PTY to this height."),
+        waitTimeMs: z.number().int().min(0).max(30_000).optional()
+          .describe("Milliseconds to wait for process output or completion. Defaults to 10000."),
         yieldTimeMs: z
           .number()
           .int()
@@ -673,7 +685,7 @@ function registerCodexProcessTools(
       ...toolWidgetDescriptorMeta(config, "shell"),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, sessionId, chars, columns, rows, yieldTimeMs, maxOutputTokens }) => {
+    async ({ workspaceId, sessionId, chars, columns, rows, waitTimeMs, yieldTimeMs, maxOutputTokens }) => {
       const startedAt = performance.now();
       workspaces.getWorkspace(workspaceId);
       const snapshot = await processSessions.write({
@@ -682,7 +694,7 @@ function registerCodexProcessTools(
         chars,
         columns,
         rows,
-        yieldTimeMs,
+        yieldTimeMs: processWait(waitTimeMs, yieldTimeMs),
         maxOutputTokens,
       });
 
@@ -1671,6 +1683,11 @@ export function createMcpServer(
 
 export interface CreateServerOptions {
   incomingArtifactAdapters?: readonly IncomingArtifactAdapter[];
+  // Personal entrypoint seams. Upstream CLI/config and default behavior stay unchanged.
+  verifyAccessToken?: (token: string) => ReturnType<SingleUserOAuthProvider["verifyAccessToken"]> | undefined;
+  registerTools?: (server: McpServer, workspaces: WorkspaceRegistry) => void;
+  dispose?: () => Promise<void>;
+  createEventStore?: () => import("@modelcontextprotocol/sdk/server/streamableHttp.js").EventStore & { close(): void };
 }
 
 export function createServer(
@@ -1691,7 +1708,10 @@ export function createServer(
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir);
   const bearerAuth = requireBearerAuth({
-    verifier: oauthProvider,
+    verifier: {
+      verifyAccessToken: async (token) =>
+        (await options.verifyAccessToken?.(token)) ?? oauthProvider.verifyAccessToken(token),
+    },
     requiredScopes: [config.oauth.scopes[0] ?? "devspace"],
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
   });
@@ -1839,8 +1859,10 @@ export function createServer(
           return;
         }
       } else if (initializeRequest) {
+        const eventStore = options.createEventStore?.();
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
+          ...(eventStore ? { eventStore } : {}),
           onsessioninitialized: (newSessionId) => {
             if (transport) transports.register(newSessionId, transport);
             logEvent(config.logging, "info", "mcp_session_created", {
@@ -1852,6 +1874,7 @@ export function createServer(
         });
 
         transport.onclose = () => {
+          eventStore?.close();
           const closedSessionId = transport?.sessionId;
           if (closedSessionId && transports.remove(closedSessionId)) {
             logEvent(config.logging, "info", "mcp_session_closed", {
@@ -1869,6 +1892,7 @@ export function createServer(
           resolveLocalAgentProviders,
           incomingArtifactAdapters,
         );
+        options.registerTools?.(server, workspaces);
         await server.connect(transport);
       } else {
         sendJsonRpcError(res, 400, -32000, "No valid MCP session");
@@ -1891,6 +1915,7 @@ export function createServer(
   return {
     app,
     config,
+    runningProcessCount: () => processSessions.runningCount,
     localAgentProviders,
     close: () => {
       closePromise ??= (async () => {
@@ -1900,6 +1925,7 @@ export function createServer(
         processSessions.shutdown();
         oauthProvider.close();
         workspaceStore.close?.();
+        await options.dispose?.();
       })();
       return closePromise;
     },

@@ -293,6 +293,14 @@ export class WorkspaceRegistry {
   }
 
   resolveReadPath(workspace: Workspace, inputPath: string): WorkspaceReadPath {
+    // A published home-relative skill path is not relative to the workspace.
+    // Keep the existing registered/activated-skill boundary; do not grant general home reads.
+    if (/^~[/\\]/.test(inputPath)) {
+      const skillRead = resolveSkillReadPath(workspace.skills, workspace.activatedSkillDirs, inputPath);
+      if (skillRead) return { absolutePath: skillRead.absolutePath,
+        readRoots: [workspace.root, skillRead.skill.baseDir], skillRead };
+      throw new Error("Home-relative reads require an advertised or activated skill path");
+    }
     try {
       return {
         absolutePath: this.resolvePath(workspace, inputPath),
