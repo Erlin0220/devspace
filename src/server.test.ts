@@ -94,6 +94,54 @@ test("static API token authenticates MCP initialize and rejects invalid tokens",
   assert.equal(denied.status, 401);
 });
 
+test("codex process tools expose stable waitTimeMs and preserve the legacy yieldTimeMs alias", async (t) => {
+  const context = await fixture(t, { toolMode: "codex" });
+  const tools = await context.client.listTools();
+
+  for (const toolName of ["exec_command", "write_stdin"]) {
+    const tool = tools.tools.find((candidate) => candidate.name === toolName);
+    assert.ok(tool, `${toolName} should be exposed in codex mode`);
+    const properties = (tool.inputSchema as { properties?: Record<string, unknown> }).properties;
+    assert.ok(properties?.waitTimeMs, `${toolName} should expose waitTimeMs`);
+    assert.ok(properties?.yieldTimeMs, `${toolName} should preserve yieldTimeMs compatibility`);
+    assert.equal(properties && "yield-timeMs" in properties, false);
+  }
+
+  const execTool = tools.tools.find((candidate) => candidate.name === "exec_command");
+  assert.match(execTool?.description ?? "", /persistent services/i);
+  assert.match(execTool?.description ?? "", /OS-managed lifecycle/i);
+
+  const opened = structuredContent(await callOpen(context.client, context.project));
+  const workspaceId = opened.workspaceId as string;
+  const node = process.platform === "win32"
+    ? `"${process.execPath}"`
+    : JSON.stringify(process.execPath);
+
+  const startedAt = performance.now();
+  const started = structuredContent(await context.client.callTool({
+    name: "exec_command",
+    arguments: {
+      workspaceId,
+      cmd: `${node} -e "setTimeout(() => {}, 500)"`,
+      waitTimeMs: 1,
+    },
+  }));
+  assert.equal(started.running, true);
+  assert.equal(typeof started.sessionId, "number");
+  assert.ok(performance.now() - startedAt < 250, "waitTimeMs should return before command completion");
+
+  const completed = structuredContent(await context.client.callTool({
+    name: "write_stdin",
+    arguments: {
+      workspaceId,
+      sessionId: started.sessionId,
+      yieldTimeMs: 2_000,
+    },
+  }));
+  assert.equal(completed.running, false);
+  assert.equal(completed.exitCode, 0);
+});
+
 test("open_workspace keeps lifecycle flags out of model output and preserves complete card metadata", async (t) => {
   const providerNote = "available";
   const context = await fixture(t, {
@@ -322,6 +370,7 @@ async function fixture(
     git?: boolean;
     localAgentProviders?: LocalAgentProviderAvailability[] | (() => LocalAgentProviderAvailability[]);
     subagents?: SubagentsConfig;
+    toolMode?: "minimal" | "full" | "codex";
   } = {},
 ): Promise<ServerFixture> {
   const root = await mkdtemp(join(tmpdir(), "devspace-server-test-"));
@@ -360,7 +409,7 @@ async function fixture(
     DEVSPACE_WORKTREE_ROOT: join(root, ".worktrees"),
     DEVSPACE_AGENT_DIR: agentDir,
     DEVSPACE_WIDGETS: "full",
-    DEVSPACE_TOOL_MODE: "full",
+    DEVSPACE_TOOL_MODE: options.toolMode ?? "full",
     DEVSPACE_SUBAGENTS: options.localAgentProviders ? "1" : "0",
     DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
     PORT: "1",

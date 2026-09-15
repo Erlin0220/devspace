@@ -561,6 +561,20 @@ function processToolResponse(
   };
 }
 
+function resolveProcessWaitTime(
+  waitTimeMs: number | undefined,
+  yieldTimeMs: number | undefined,
+): number | undefined {
+  if (
+    waitTimeMs !== undefined &&
+    yieldTimeMs !== undefined &&
+    waitTimeMs !== yieldTimeMs
+  ) {
+    throw new Error("waitTimeMs and legacy yieldTimeMs must match when both are provided.");
+  }
+  return waitTimeMs ?? yieldTimeMs;
+}
+
 function registerCodexProcessTools(
   server: McpServer,
   config: ServerConfig,
@@ -573,7 +587,7 @@ function registerCodexProcessTools(
     {
       title: "Execute command",
       description:
-        "Run a command in a workspace. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, and long-running processes.",
+        "Run a session-owned command in a workspace. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, and finite long-running commands. On Windows, the command and its descendants may be terminated when the process session or DevSpace runtime stops. Do not launch persistent services, trays, tunnels, MCP servers, or daemons directly with this tool; use that application's OS-managed lifecycle/start command instead.",
       inputSchema: {
         workspaceId: z.string().describe(workspaceIdDescription),
         cmd: z.string().min(1).describe("Shell command to execute."),
@@ -587,13 +601,20 @@ function registerCodexProcessTools(
           .string()
           .optional()
           .describe("Working directory relative to the workspace root. Defaults to the workspace root."),
-        yieldTimeMs: z
+        waitTimeMs: z
           .number()
           .int()
           .min(0)
           .max(30_000)
           .optional()
           .describe("Milliseconds to wait before returning a running session. Defaults to 10000."),
+        yieldTimeMs: z
+          .number()
+          .int()
+          .min(0)
+          .max(30_000)
+          .optional()
+          .describe("Deprecated compatibility alias for waitTimeMs."),
         maxOutputTokens: z
           .number()
           .int()
@@ -606,7 +627,7 @@ function registerCodexProcessTools(
       ...toolWidgetDescriptorMeta(config, "shell"),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, cmd, tty, columns, rows, workingDirectory, yieldTimeMs, maxOutputTokens }) => {
+    async ({ workspaceId, cmd, tty, columns, rows, workingDirectory, waitTimeMs, yieldTimeMs, maxOutputTokens }) => {
       const startedAt = performance.now();
       const workspace = workspaces.getWorkspace(workspaceId);
       const cwd = workspaces.resolveWorkingDirectory(workspace, workingDirectory);
@@ -618,7 +639,7 @@ function registerCodexProcessTools(
         tty,
         columns,
         rows,
-        yieldTimeMs,
+        yieldTimeMs: resolveProcessWaitTime(waitTimeMs, yieldTimeMs),
         maxOutputTokens,
       });
 
@@ -655,13 +676,20 @@ function registerCodexProcessTools(
         chars: z.string().optional().describe("Characters to write. Omit or pass an empty string to poll."),
         columns: z.number().int().min(1).max(1_000).optional().describe("Resize a PTY to this width."),
         rows: z.number().int().min(1).max(1_000).optional().describe("Resize a PTY to this height."),
-        yieldTimeMs: z
+        waitTimeMs: z
           .number()
           .int()
           .min(0)
           .max(30_000)
           .optional()
           .describe("Milliseconds to wait for process output or completion. Defaults to 10000."),
+        yieldTimeMs: z
+          .number()
+          .int()
+          .min(0)
+          .max(30_000)
+          .optional()
+          .describe("Deprecated compatibility alias for waitTimeMs."),
         maxOutputTokens: z
           .number()
           .int()
@@ -674,7 +702,7 @@ function registerCodexProcessTools(
       ...toolWidgetDescriptorMeta(config, "shell"),
       annotations: SHELL_TOOL_ANNOTATIONS,
     },
-    async ({ workspaceId, sessionId, chars, columns, rows, yieldTimeMs, maxOutputTokens }) => {
+    async ({ workspaceId, sessionId, chars, columns, rows, waitTimeMs, yieldTimeMs, maxOutputTokens }) => {
       const startedAt = performance.now();
       workspaces.getWorkspace(workspaceId);
       const snapshot = await processSessions.write({
@@ -683,7 +711,7 @@ function registerCodexProcessTools(
         chars,
         columns,
         rows,
-        yieldTimeMs,
+        yieldTimeMs: resolveProcessWaitTime(waitTimeMs, yieldTimeMs),
         maxOutputTokens,
       });
 
