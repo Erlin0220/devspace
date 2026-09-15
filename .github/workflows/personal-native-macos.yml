@@ -1,0 +1,28 @@
+name: Personal macOS native build
+
+on:
+  push:
+    branches: [main, 'personal/**']
+    paths:
+      - 'personal/native/PersonalDevSpaceTray.swift'
+      - '.github/workflows/personal-native-macos.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: macos-14
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compile both native architectures without signing credentials
+        run: |
+          set -euo pipefail
+          for arch in arm64 x86_64; do
+            swiftc -swift-version 5 -O -target "$arch-apple-macosx11.0" \
+              -framework AppKit personal/native/PersonalDevSpaceTray.swift \
+              -o "$RUNNER_TEMP/personal-devspace-tray-$arch"
+            file "$RUNNER_TEMP/personal-devspace-tray-$arch"
+          done
