@@ -1,12 +1,14 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 // Tray protocol, single-instance ownership and rendering snapshot: Team DevSpace 15ce088.
-// Personal branding is generated locally; no external image/runtime dependency.
+// Personal branding is compiled from the reviewed Personal logo asset.
 #[cfg(not(target_os = "windows"))]
 compile_error!("Use the native Swift frontend on macOS");
 use serde::Deserialize;
 use std::{collections::HashMap, io::{self, BufRead, Write}, thread};
 use tray_icon::{menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu}, Icon, TrayIcon, TrayIconBuilder};
 use winit::{application::ApplicationHandler, event_loop::{ActiveEventLoop, EventLoop}};
+
+const BASE_ICON: &[u8; 32 * 32 * 4] = include_bytes!("../assets/personal-devspace-32.rgba");
 
 struct InstanceGuard { handle: windows_sys::Win32::Foundation::HANDLE }
 impl InstanceGuard {
@@ -55,15 +57,11 @@ fn bounded_text(value: &str, max: usize) -> String {
 }
 fn icon(status: &str) -> Icon {
     let fill = match status { "ready" => [41, 163, 92], "partial" => [230, 166, 35], "suspended" => [211, 64, 83], "busy" => [55, 125, 220], _ => [123, 132, 145] };
-    let mut rgba = vec![0_u8; 32 * 32 * 4];
-    for y in 3_i32..29 { for x in 3_i32..29 {
-        let border = x < 7 || y < 7 || y > 24 || x > 24;
-        let rgb = if border { [75, 151, 255] } else { [15, 23, 34] };
-        let offset = ((y * 32 + x) * 4) as usize; rgba[offset..offset+3].copy_from_slice(&rgb); rgba[offset+3] = 255;
-    } }
+    let mut rgba = BASE_ICON.to_vec();
     for y in 18_i32..32 { for x in 18_i32..32 {
         let d = (x-25)*(x-25)+(y-25)*(y-25);
-        if d <= 42 { let offset = ((y*32+x)*4) as usize; rgba[offset..offset+3].copy_from_slice(&fill); rgba[offset+3] = 255; }
+        if d <= 49 { let offset = ((y*32+x)*4) as usize; rgba[offset..offset+3].copy_from_slice(&[255,255,255]); rgba[offset+3] = 255; }
+        if d <= 36 { let offset = ((y*32+x)*4) as usize; rgba[offset..offset+3].copy_from_slice(&fill); rgba[offset+3] = 255; }
     } }
     Icon::from_rgba(rgba, 32, 32).expect("valid tray icon")
 }

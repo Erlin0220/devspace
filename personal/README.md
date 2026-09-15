@@ -60,7 +60,9 @@ Task Scheduler owners and a GUI-subsystem launcher. Each launcher owns only its
 own child process tree. Never launch a persistent service directly inside an MCP
 command session. A failed tray/WebUI/log cache cannot stop a healthy Runtime.
 The Control Center remembers its loopback port; if another application owns that
-port it uses a new port and capability without touching the other process.
+port it uses a new port and capability without touching the other process. A
+healthy install/repair creates both Start Menu and Desktop shortcuts using the
+packaged Personal logo; shortcut failure remains a desktop-only repair condition.
 
 ## Stable upgrade and installation
 

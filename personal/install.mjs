@@ -8,7 +8,7 @@ import { atomicJson, readJson, secureStateDirectory, stateHome } from './state.m
 import { payloadDigest, verifyInstallable } from './artifact.mjs';
 import { readPersonalAuth, readPersonalConfig } from './config.mjs';
 import { discoverStable } from './upgrade.mjs';
-import { installerRunning, jobRunning, jobAction, registerJobs, runWindowsDesktop, ownerId } from './desktop/platform.mjs';
+import { installerRunning, jobRunning, jobAction, registerDesktopEntries, registerJobs, runWindowsDesktop, ownerId } from './desktop/platform.mjs';
 
 async function report(home, value) {
   // Progress is optional; its failure must not roll back a healthy installed runtime.
@@ -137,7 +137,11 @@ export async function installPersonal(source, home = stateHome()) {
         await rm(join(home, 'install.json'), { force: true }); await legacyAction(home, 'restore');
       }
     },
-    desktop: () => jobAction(home, 'desktop', 'start'),
+    desktop: async () => {
+      let entryError; try { await registerDesktopEntries(home, destination); } catch (error) { entryError = error; }
+      await jobAction(home, 'desktop', 'start');
+      if (entryError) throw entryError;
+    },
   });
   // Reuse npm's existing shim/link management. Otherwise the legacy global CLI
   // would still expose removed commands, and later upgrades could leave it stale.

@@ -46,6 +46,15 @@ test('native task identity is independent of API tokens and uses current-user GU
   assert.match(text, /personal-launcher\.exe/); assert.doesNotMatch(text, /TeamDevSpace|TDS|apiToken|ownerToken/);
   assert.match(text, /DEVSPACE_API_TOKEN=/, 'managed profiles clear inherited API credentials and use their own private file');
 });
+test('Control Center uses the Personal logo and keeps manual status checks out of transient banners', async () => {
+  const [html, script] = await Promise.all([
+    readFile(new URL('../desktop/control.html', import.meta.url), 'utf8'),
+    readFile(new URL('../desktop/control.js', import.meta.url), 'utf8'),
+  ]);
+  assert.match(html, /personal-devspace-logo\.png/); assert.match(html, /id="check-status"/);
+  assert.match(script, /if \(name !== 'check'\) feedback\('正在处理…'\)/);
+  assert.match(script, /requestAction === 'check'/);
+});
 
 async function webFixture(t, { collide = false, cacheFailure = false } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'personal-control-')); const port = randomInt(50000, 65000);
@@ -71,6 +80,8 @@ test('Control Center enforces capability, origin, host, content type and bounded
   assert.equal(wrongHost, 403);
   const page = await f.request('/'); assert.equal(page.status, 200); assert.match(page.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   assert.equal((await page.text()).includes(f.token), false);
+  const logo = await fetch(`${f.web.origin}/personal-devspace-logo.png`); assert.equal(logo.status, 200); assert.match(logo.headers.get('content-type'), /^image\/png/);
+  const favicon = await fetch(`${f.web.origin}/favicon.ico`); assert.equal(favicon.status, 200); assert.match(favicon.headers.get('content-type'), /^image\/x-icon/);
   assert.equal((await f.request('/api/action', { method: 'POST', body: '{}' })).status, 403);
   const post = body => f.request('/api/action', { method: 'POST', headers: { Origin: f.web.origin, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal((await post({ action: 'check', unexpected: true })).status, 400);

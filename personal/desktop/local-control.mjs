@@ -8,7 +8,13 @@ import { atomicJson, randomSecret, readJson, secureStateDirectory, stateHome } f
 
 export const PREFERRED_PORT = 53683;
 const validPort = value => Number.isInteger(value) && value >= 49152 && value <= 65535;
-const assets = { '/': ['control.html', 'text/html; charset=utf-8'], '/control.css': ['control.css', 'text/css; charset=utf-8'], '/control.js': ['control.js', 'text/javascript; charset=utf-8'] };
+const assets = {
+  '/': ['control.html', 'text/html; charset=utf-8'],
+  '/control.css': ['control.css', 'text/css; charset=utf-8'],
+  '/control.js': ['control.js', 'text/javascript; charset=utf-8'],
+  '/personal-devspace-logo.png': ['../assets/personal-devspace-logo.png', 'image/png'],
+  '/favicon.ico': ['../assets/personal-devspace.ico', 'image/x-icon'],
+};
 const actions = new Set(['check', 'suspend', 'resume', 'restart', 'repair', 'project-root', 'choose-folder', 'logs', 'update-check', 'update-prepare', 'update-apply']);
 const failure = (message, status = 400) => Object.assign(new Error(message), { status });
 
@@ -53,7 +59,6 @@ export async function startLocalControl(controller, { home = stateHome(), prefer
       if (!origin || request.headers.host !== new URL(origin).host || (request.headers.origin && request.headers.origin !== origin) || request.headers['sec-fetch-site'] === 'cross-site') throw failure('拒绝跨站访问', 403);
       const asset = loaded.get(request.url);
       if (request.method === 'GET' && asset) return send(200, asset.bytes, asset.type);
-      if (request.url === '/favicon.ico') return send(204, null);
       const supplied = Buffer.from(request.headers.authorization ?? '');
       if (supplied.length !== authorization.length || !timingSafeEqual(supplied, authorization)) throw failure('请从托盘重新打开控制中心', 401);
       if (request.method === 'GET' && request.url === '/api/state') return send(200, { ...controller.snapshot(), controlInstance: instance });

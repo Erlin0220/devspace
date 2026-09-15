@@ -2,7 +2,7 @@ const $ = id => document.getElementById(id);
 const fragment = location.hash.slice(1);
 if (/^[A-Za-z0-9_-]{43}$/.test(fragment)) { sessionStorage.setItem('personal-control', fragment); history.replaceState(null, '', location.pathname); }
 const capability = sessionStorage.getItem('personal-control');
-let current, requestPending = false, shownVersion, stopped = false, rootDraft = false;
+let current, requestPending = false, requestAction, shownVersion, stopped = false, rootDraft = false;
 const titles = { overview: '概览', settings: '本机设置', updates: '软件更新', diagnostics: '诊断与修复' };
 function feedback(message, error = false) { $('feedback').textContent = message ?? ''; $('feedback').hidden = !message; $('feedback').dataset.error = String(error); }
 async function api(path, body) {
@@ -25,6 +25,8 @@ function render(state) {
   $('auth-status').textContent = state.apiTokenConfigured ? '个人 API Token 已配置' : '使用 upstream OAuth';
   $('toggle-service').textContent = state.paused || !state.running ? '恢复服务' : '暂停服务';
   $('toggle-service').dataset.action = state.paused || !state.running ? 'resume' : 'suspend';
+  $('check-status').textContent = requestPending && requestAction === 'check' ? '检查中…' : '检查状态';
+  $('check-status').setAttribute('aria-busy', String(requestPending && requestAction === 'check'));
   for (const button of document.querySelectorAll('[data-action]')) button.disabled = state.busy || requestPending;
   $('prepare-update').disabled = state.busy || requestPending || !state.updates?.available;
   const candidateReady = state.candidate?.status === 'tested-awaiting-review';
@@ -53,14 +55,15 @@ async function action(name, input = {}) {
   if (requestPending) return;
   if (['suspend', 'restart', 'project-root'].includes(name) && !confirm('该操作可能中断正在执行的任务。确认当前任务已结束后继续。')) return;
   if (name === 'update-apply' && !confirm('确认已审查候选分支、range-diff 和测试报告。安装会重启个人 Runtime，保留认证、目录及暂停状态；是否继续？')) return;
-  requestPending = true; if (current) render(current); feedback('正在处理…');
+  requestPending = true; requestAction = name; if (current) render(current); if (name !== 'check') feedback('正在处理…');
   try { const result = await api('/api/action', { action: name, ...input });
     if (name === 'choose-folder' && result.projectRoot) { $('root-input').value = result.projectRoot; rootDraft = true; }
     if (name === 'project-root') rootDraft = false;
     if (name === 'update-prepare') $('update-dialog').close();
     render(await api('/api/state'));
   } catch (error) { feedback(error.message, true); }
-  finally { requestPending = false; if (current) for (const button of document.querySelectorAll('[data-action]')) button.disabled = current.busy;
+  finally { requestPending = false; requestAction = undefined; $('check-status').textContent = '检查状态'; $('check-status').setAttribute('aria-busy', 'false');
+    if (current) for (const button of document.querySelectorAll('[data-action]')) button.disabled = current.busy;
     $('prepare-update').disabled = current?.busy || !current?.updates?.available; }
 }
 document.addEventListener('click', event => {

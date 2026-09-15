@@ -29,7 +29,12 @@ async function nativeSourceDigest() {
       if (entry.name === 'target') continue;
       const path = join(directory, entry.name);
       if (entry.isDirectory()) await walk(path);
-      else { digest.update(path.slice(root.length).replaceAll('\\', '/')); digest.update((await readFile(path, 'utf8')).replaceAll('\r\n', '\n')); }
+      else {
+        digest.update(path.slice(root.length).replaceAll('\\', '/'));
+        const bytes = await readFile(path);
+        if (/\.(?:c|lock|mjs|rs|swift|toml)$/i.test(entry.name)) digest.update(bytes.toString('utf8').replaceAll('\r\n', '\n'));
+        else digest.update(bytes);
+      }
     }
   }
   await walk(join(root, 'personal/native'));
@@ -67,10 +72,11 @@ export async function buildNative() {
     const env = { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR ?? join(root, 'build/personal-tray'),
       CARGO_RESOLVER_INCOMPATIBLE_RUST_VERSIONS: 'fallback' };
     if (env.CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER) {
-      const linker = join(root, 'build/personal-linker'); await mkdir(linker, { recursive: true });
-      await run(zig, ['cc', join(root, 'personal/native/zig-as.c'), '-target', 'x86_64-windows-gnu', '-municode', '-Os', '-s', '-o', join(linker, 'as.exe')]);
+      // Rust's self-contained dlltool invokes the assembler next to the configured
+      // GNU linker. Put the Zig adapter there, matching the proven Team build path.
+      const assembler = join(dirname(env.CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER), 'as.exe');
+      await run(zig, ['cc', join(root, 'personal/native/zig-as.c'), '-target', 'x86_64-windows-gnu', '-municode', '-Os', '-s', '-o', assembler]);
       env.PERSONAL_ZIG = zig;
-      env.CARGO_ENCODED_RUSTFLAGS = [env.CARGO_ENCODED_RUSTFLAGS, '-C', `link-arg=-B${linker}/`].filter(Boolean).join('\x1f');
     }
     if (!(await access(join(crate, 'Cargo.lock')).then(() => true, () => false))) {
       await run(cargo, ['generate-lockfile', '--offline'], { cwd: crate, env });

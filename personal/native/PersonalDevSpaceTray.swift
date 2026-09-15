@@ -46,10 +46,18 @@ final class InstanceGuard {
     private var statusItem: NSStatusItem?
     private var state: TrayState?
     private let smoke = CommandLine.arguments.contains("--smoke")
+    private func brandImage() -> NSImage? {
+        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).standardizedFileURL
+        let url = executable.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("assets/personal-devspace-logo.png")
+        guard let image = NSImage(contentsOf: url) else { return nil }
+        image.size = NSSize(width: 18, height: 18); image.isTemplate = false
+        return image
+    }
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength); statusItem = item
-        item.button?.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Personal DevSpace")
-        item.button?.image?.isTemplate = true; item.button?.toolTip = "Personal DevSpace · 正在启动…"
+        if let image = brandImage() { item.button?.image = image }
+        else { item.button?.image = NSImage(systemSymbolName: "terminal", accessibilityDescription: "Personal DevSpace"); item.button?.image?.isTemplate = true }
+        item.button?.toolTip = "Personal DevSpace · 正在启动…"
         emit("ready"); DispatchQueue.main.async { emit("tray-visible") }
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let application = self else { return }

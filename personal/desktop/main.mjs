@@ -10,7 +10,7 @@ import { runtimeSettings } from '../runtime.mjs';
 import { discoverStable, prepareStable } from '../upgrade.mjs';
 import { createDesktopController } from './controller.mjs';
 import { startLocalControl } from './local-control.mjs';
-import { chooseFolder, installRecord, jobAction, openBrowser, openLogs, ownerId, registerJobs } from './platform.mjs';
+import { chooseFolder, installRecord, jobAction, openBrowser, openLogs, ownerId, registerDesktopEntries, registerJobs } from './platform.mjs';
 import semver from 'semver';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -51,7 +51,9 @@ export function operations(home = stateHome()) {
       const installed = await installRecord(home);
       // Re-registering the desktop entry does not restart a healthy Runtime.
       await registerJobs(home, installed.packageRoot, ['desktop']);
+      let entryError; try { await registerDesktopEntries(home, installed.packageRoot); } catch (error) { entryError = error; }
       await jobAction(home, 'desktop', 'start');
+      if (entryError) throw entryError;
     },
     'project-root': async ({ projectRoot }) => {
       const root = await approvedProjectRoot(projectRoot);

@@ -2,7 +2,7 @@
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readJson, stateHome } from './state.mjs';
-import { jobAction, openBrowser, registerJobs, installRecord } from './desktop/platform.mjs';
+import { jobAction, openBrowser, registerDesktopEntries, registerJobs, installRecord } from './desktop/platform.mjs';
 
 const home = stateHome(); const action = process.argv[2] ?? 'status';
 try {
@@ -17,7 +17,9 @@ try {
   } else if (action === 'migrate') {
     console.log(JSON.stringify(await (await import('./legacy-import.mjs')).importLegacy(home), null, 2));
   } else if (action === 'repair') {
-    const installed = await installRecord(home); await registerJobs(home, installed.packageRoot); await jobAction(home, 'desktop', 'start');
+    const installed = await installRecord(home); await registerJobs(home, installed.packageRoot);
+    let entryError; try { await registerDesktopEntries(home, installed.packageRoot); } catch (error) { entryError = error; }
+    await jobAction(home, 'desktop', 'start'); if (entryError) throw entryError;
   } else if (action === 'start') {
     if (!(await (await import('./config.mjs')).readPersonalConfig(home)).paused) await jobAction(home, 'runtime', 'start');
     await jobAction(home, 'desktop', 'start');

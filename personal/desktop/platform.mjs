@@ -88,6 +88,29 @@ async function windowsTask(home, component) {
   if (!result.includes(`PersonalDevSpace:${ownerId(home)}:${component}`)) throw new Error('Task name belongs to an unknown owner');
   return result;
 }
+export async function registerDesktopEntries(home, root) {
+  if (process.platform !== 'win32') return;
+  const launcher = join(root, 'personal', 'bin', 'personal-launcher.exe');
+  const icon = join(root, 'personal', 'assets', 'personal-devspace.ico');
+  await access(launcher); await access(icon);
+  const argumentsText = ['--cwd', root, '--stdout', join(home, 'logs', 'open.log'), '--stderr', join(home, 'logs', 'open.error.log'),
+    '--env', `PERSONAL_DEVSPACE_HOME=${home}`, '--', process.execPath, join(root, 'personal', 'bin.mjs'), 'open'].map(quoted).join(' ');
+  await runWindowsDesktop(`
+$ErrorActionPreference='Stop'
+$shell=New-Object -ComObject WScript.Shell
+$folders=@([Environment]::GetFolderPath('Programs'), [Environment]::GetFolderPath('Desktop')) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+foreach($folder in $folders) {
+  New-Item -ItemType Directory -Force -Path $folder | Out-Null
+  $link=$shell.CreateShortcut((Join-Path $folder 'Personal DevSpace.lnk'))
+  $link.TargetPath=$env:PERSONAL_LAUNCHER
+  $link.Arguments=$env:PERSONAL_ARGUMENTS
+  $link.WorkingDirectory=$env:PERSONAL_ROOT
+  $link.IconLocation=$env:PERSONAL_ICON
+  $link.Description='Personal DevSpace'
+  $link.Save()
+}
+`, { env: { PERSONAL_LAUNCHER: launcher, PERSONAL_ARGUMENTS: argumentsText, PERSONAL_ROOT: root, PERSONAL_ICON: icon } });
+}
 export async function registerJobs(home, root, selected = components, { record = true } = {}) {
   await secureStateDirectory(home);
   await access(join(root, 'dist', 'server.js'));
@@ -101,13 +124,6 @@ export async function registerJobs(home, root, selected = components, { record =
       const path = join(home, 'startup', `${component}.xml`);
       await writeFile(path, `\ufeff${taskXml({ home, component, root, node: process.execPath, sid })}`, 'utf16le');
       await native(system('schtasks.exe'), ['/Create', '/TN', jobName(home, component), '/XML', path, '/F']);
-    }
-    // A real reopen entrypoint, not a copied shortcut to the enterprise installation.
-    if (record) {
-    const shortcut = join(process.env.APPDATA ?? join(homedir(), 'AppData', 'Roaming'), 'Microsoft', 'Windows', 'Start Menu', 'Programs', 'Personal DevSpace.lnk');
-    await runWindowsDesktop(`$shell=New-Object -ComObject WScript.Shell; $link=$shell.CreateShortcut($env:PERSONAL_SHORTCUT); $link.TargetPath=$env:PERSONAL_LAUNCHER; $link.Arguments=$env:PERSONAL_ARGUMENTS; $link.WorkingDirectory=$env:PERSONAL_ROOT; $link.Description='Personal DevSpace'; $link.Save()`,
-      { env: { PERSONAL_SHORTCUT: shortcut, PERSONAL_LAUNCHER: join(root, 'personal', 'bin', 'personal-launcher.exe'), PERSONAL_ROOT: root,
-        PERSONAL_ARGUMENTS: ['--cwd', root, '--stdout', join(home, 'logs', 'open.log'), '--stderr', join(home, 'logs', 'open.error.log'), '--env', `PERSONAL_DEVSPACE_HOME=${home}`, '--', process.execPath, join(root, 'personal', 'bin.mjs'), 'open'].map(quoted).join(' ') } });
     }
   } else if (process.platform === 'darwin') {
     const directory = join(homedir(), 'Library', 'LaunchAgents'); await mkdir(directory, { recursive: true });
