@@ -49,6 +49,7 @@ import {
   McpSessionRegistry,
   type McpSessionCloseResult,
 } from "./mcp-sessions.js";
+import { BoundedMcpEventStore } from "./mcp-event-store.js";
 import { ProcessSessionManager, type ProcessSnapshot } from "./process-sessions.js";
 import { createReviewCheckpointManager } from "./review-checkpoints.js";
 import { openAiConversationScopeId } from "./request-meta.js";
@@ -1838,6 +1839,10 @@ export function createServer(
     const requestId = res.locals.requestId as string | undefined;
     const sessionId = req.header("mcp-session-id");
     const initializeRequest = req.method === "POST" && isInitializeRequest(req.body);
+    const protocolVersion = initializeRequest
+      ? (req.body as { params?: { protocolVersion?: unknown } } | undefined)?.params?.protocolVersion
+      : req.header("mcp-protocol-version");
+    const lastEventId = req.header("last-event-id");
 
     const authorization = req.header("authorization") ?? "";
     const apiTokenPrefix = "Bearer ";
@@ -1879,7 +1884,16 @@ export function createServer(
       sessionIdPresent: Boolean(sessionId),
       sessionIdPrefix: sessionIdPrefix(sessionId),
       isInitialize: initializeRequest,
+      protocolVersion: typeof protocolVersion === "string" ? protocolVersion : undefined,
+      lastEventIdPresent: Boolean(lastEventId),
     });
+    if (lastEventId) {
+      logEvent(config.logging, "info", "mcp_stream_resume_requested", {
+        requestId,
+        sessionIdPrefix: sessionIdPrefix(sessionId),
+        protocolVersion: typeof protocolVersion === "string" ? protocolVersion : undefined,
+      });
+    }
 
     try {
       let transport: Transport | undefined;
@@ -1891,19 +1905,29 @@ export function createServer(
           return;
         }
       } else if (initializeRequest) {
+        const eventStore = new BoundedMcpEventStore({
+          onCapacityEviction: (evicted) => {
+            logEvent(config.logging, "warn", "mcp_event_store_capacity_eviction", evicted);
+          },
+        });
         transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
+          eventStore,
+          retryInterval: 500,
           onsessioninitialized: (newSessionId) => {
             if (transport) transports.register(newSessionId, transport);
             logEvent(config.logging, "info", "mcp_session_created", {
               requestId,
               sessionIdPrefix: sessionIdPrefix(newSessionId),
+              protocolVersion: typeof protocolVersion === "string" ? protocolVersion : undefined,
+              resumabilityEnabled: protocolVersion === "2025-11-25",
               ...requestLogFields(req, config),
             });
           },
         });
 
         transport.onclose = () => {
+          eventStore.close();
           const closedSessionId = transport?.sessionId;
           if (closedSessionId && transports.remove(closedSessionId)) {
             logEvent(config.logging, "info", "mcp_session_closed", {
