@@ -289,6 +289,10 @@ export class ProcessSessionManager {
     this.sessions.clear();
   }
 
+  get runningCount(): number {
+    return [...this.sessions.values()].filter((session) => session.running).length;
+  }
+
   private async waitForExit(session: ProcessSession, yieldTimeMs: number): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
     try {
