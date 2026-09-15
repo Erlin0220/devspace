@@ -53,6 +53,12 @@ An adapter exception is not evidence that a model failed. A successful command i
 
 Do not expand DevSpace's responsibility while fixing a local symptom. Host UI, provider model naming, tunnel management, and duplicated review experiences require an explicit product decision.
 
+## MCP response-loss recovery
+
+For resumable Streamable HTTP sessions, a transient loss of the MCP response path must not turn a successfully running tool call into a lost long-running task. DevSpace keeps a bounded, per-MCP-session replay store and relies on the MCP client's `Last-Event-ID` resume flow so the original tool result can return to the same host turn without re-executing the underlying command.
+
+Treat this as transport recovery, not task persistence. The replay store is memory-bounded, expires retained events, and is destroyed with the MCP session. It covers response-stream and tunnel interruptions while the DevSpace process remains alive; a DevSpace process crash or restart is a separate failure class and must not be "fixed" by silently adding a second persistent job system.
+
 ## Verify the real path
 
 Determine how the user will consume the change and verify that path. Behavior may differ between:
@@ -97,6 +103,7 @@ For UI changes, include before/after images and a short interaction video when b
 - `src/workspaces.ts` — workspace lifecycle, instructions, skills, and profiles.
 - `src/roots.ts` — allowed roots and path containment.
 - `src/process-sessions.ts` — long-running process lifecycle.
+- `src/mcp-event-store.ts` — bounded replay state for resumable MCP response streams.
 - `src/git.ts` and `src/git-worktrees.ts` — Git and worktree operations.
 - `src/local-agent-*.ts` — subagent configuration, providers, and execution.
 - `src/artifact-*.ts` and `src/incoming-artifacts.ts` — artifact handling.

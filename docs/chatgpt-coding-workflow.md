@@ -178,6 +178,25 @@ registered. `exec_command` returns a process session ID when a command is still
 running after its yield window. Use `write_stdin` to poll it, send input, resize
 a PTY, or send Ctrl-C. Set `tty: true` only for commands that need a terminal.
 
+## Interrupted MCP Responses
+
+DevSpace supports resumable Streamable HTTP responses for compatible MCP hosts.
+If the response stream or tunnel drops while a tool call is running, the local
+tool execution continues. The host can reconnect with `Last-Event-ID`, and
+DevSpace replays the retained result into the original tool call instead of
+running the command again.
+
+Replay state is isolated per MCP session and bounded by TTL, event count, stream
+count, and memory size. Capacity pressure degrades replay availability rather
+than failing an otherwise valid live tool call. This recovery is intentionally
+in-memory: it protects against transient response-path failures while the
+DevSpace process stays alive, but it does not make tool calls survive a DevSpace
+process crash or restart.
+
+The regression suite covers fast-completing commands, concurrent dropped
+responses within one session, isolation across independent sessions, and
+exactly-once command side effects during recovery.
+
 ## Show Changes
 
 By default, `DEVSPACE_WIDGETS=full`.
