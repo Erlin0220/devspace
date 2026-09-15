@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "repository": "Waishnav/devspace",
+  "version": "1.0.8",
+  "tag": "v1.0.8",
+  "commit": "fe712e2b6c07231d2a76503bf2a674b165850616",
+  "channel": "stable",
+  "desktopSnapshot": {
+    "repository": "Erlin0220/team-devspace",
+    "version": "0.2.6",
+    "commit": "15ce088b890142eb7922c156e01aa637b700cb24"
+  }
+}
