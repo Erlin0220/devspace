@@ -580,10 +580,12 @@ function registerCodexProcessTools(
     {
       title: "Execute command",
       description:
-        "Run a command in a workspace. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, and long-running processes.",
+        "Run a command in a workspace using DevSpace's platform-selected shell. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, and long-running processes.",
       inputSchema: {
         workspaceId: z.string().describe(workspaceIdDescription),
-        cmd: z.string().min(1).describe("Shell command to execute."),
+        cmd: z.string().min(1).describe(
+          "Command text passed to the platform-selected shell. On Windows, DevSpace uses ComSpec (normally cmd.exe); use cmd.exe syntax such as NUL to discard output. PowerShell syntax such as $null only works when PowerShell is explicitly invoked.",
+        ),
         tty: z
           .boolean()
           .optional()
