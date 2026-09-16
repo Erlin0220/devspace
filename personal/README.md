@@ -59,6 +59,11 @@ On Windows, Runtime, desktop and the one-shot installer have separate user-sessi
 Task Scheduler owners and a GUI-subsystem launcher. Each launcher owns only its
 own child process tree. Never launch a persistent service directly inside an MCP
 command session. A failed tray/WebUI/log cache cannot stop a healthy Runtime.
+When Codex is installed, install/repair resolves its absolute CLI path and pins it
+as `CODEX_COMMAND` on the managed Runtime profile so subagents do not depend on a
+Task Scheduler/launchd/systemd PATH snapshot. Missing Codex remains optional and
+does not make Personal installation fail; a later repair refreshes the resolved
+path after a Codex/NVM move.
 The Control Center remembers its loopback port; if another application owns that
 port it uses a new port and capability without touching the other process. A
 healthy install/repair creates both Start Menu and Desktop shortcuts using the

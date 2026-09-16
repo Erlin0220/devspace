@@ -2,14 +2,14 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer, request as httpRequest } from 'node:http';
 import { randomInt } from 'node:crypto';
-import { mkdtemp, rm, mkdir, readFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { createDesktopController } from '../desktop/controller.mjs';
 import { startLocalControl, bindPort } from '../desktop/local-control.mjs';
 import { atomicJson } from '../state.mjs';
 import { runtimeEnvironment, readPersonalConfig } from '../config.mjs';
-import { taskXml, ownerId } from '../desktop/platform.mjs';
+import { discoverCodexCommand, taskXml, ownerId } from '../desktop/platform.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const tick = () => new Promise(resolve => setImmediate(resolve));
@@ -41,10 +41,24 @@ test('upstream settings remain separate and pause corruption fails closed', asyn
   await atomicJson(join(home, 'intent.json'), { paused: 'invalid' }); await assert.rejects(readPersonalConfig(home), /pause intent/);
 });
 test('native task identity is independent of API tokens and uses current-user GUI launcher ownership', () => {
-  const home = join(tmpdir(), 'personal-example'); const text = taskXml({ home, root: 'C:\\example', node: 'C:\\node.exe', component: 'runtime', sid: 'S-1-5-21-123-456-789-1001' });
+  const home = join(tmpdir(), 'personal-example'); const text = taskXml({ home, root: 'C:\\example', node: 'C:\\node.exe', component: 'runtime', sid: 'S-1-5-21-123-456-789-1001', codexCommand: 'C:\\tools\\codex.cmd' });
   assert.ok(text.includes(`PersonalDevSpace:${ownerId(home)}:runtime`)); assert.match(text, /LeastPrivilege/); assert.match(text, /InteractiveToken/);
   assert.match(text, /personal-launcher\.exe/); assert.doesNotMatch(text, /TeamDevSpace|TDS|apiToken|ownerToken/);
   assert.match(text, /DEVSPACE_API_TOKEN=/, 'managed profiles clear inherited API credentials and use their own private file');
+  assert.match(text, /CODEX_COMMAND=C:\\tools\\codex\.cmd/, 'runtime task pins the discovered Codex CLI path');
+  const desktop = taskXml({ home, root: 'C:\\example', node: 'C:\\node.exe', component: 'desktop', sid: 'S-1-5-21-123-456-789-1001', codexCommand: 'C:\\tools\\codex.cmd' });
+  assert.doesNotMatch(desktop, /CODEX_COMMAND=/, 'desktop task does not inherit provider-specific runtime settings');
+});
+test('managed runtime discovers an absolute Codex command without hardcoding machine paths', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'personal-codex-')); t.after(() => rm(directory, { recursive: true, force: true }));
+  const command = join(directory, process.platform === 'win32' ? 'codex.cmd' : 'codex');
+  await writeFile(command, process.platform === 'win32' ? '@echo off\r\n' : '#!/bin/sh\n');
+  if (process.platform !== 'win32') await chmod(command, 0o700);
+  const fakeNode = join(directory, process.platform === 'win32' ? 'node.exe' : 'node');
+  const resolved = await discoverCodexCommand({ PATH: join(directory, 'missing') }, process.platform, fakeNode);
+  assert.equal(resolved, command);
+  assert.equal(await discoverCodexCommand({ PATH: [directory, join(directory, 'missing')].join(delimiter) }, process.platform, join(directory, 'elsewhere', 'node')), command);
+  assert.equal(await discoverCodexCommand({ PATH: join(directory, 'missing') }, process.platform, join(directory, 'elsewhere', 'node')), undefined);
 });
 test('Control Center uses the Personal logo and keeps manual status checks out of transient banners', async () => {
   const [html, script] = await Promise.all([

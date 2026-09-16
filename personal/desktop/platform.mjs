@@ -2,9 +2,10 @@
 // services are owned by Task Scheduler / launchd / systemd, never an MCP command.
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { constants as fsConstants } from 'node:fs';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { stateHome, readJson, atomicJson, secureStateDirectory } from '../state.mjs';
@@ -17,6 +18,40 @@ const quoted = value => `"${String(value).replace(/(\\*)"/g, '$1$1\\"').replace(
 export const ownerId = home => createHash('sha256').update(process.platform === 'win32' ? resolve(home).toLowerCase() : resolve(home)).digest('hex').slice(0, 20);
 export const jobName = (home, component) => `com.personal-devspace.${ownerId(home)}.${component}`;
 const system = executable => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', executable);
+
+function envValue(env, name) {
+  const entry = Object.entries(env).find(([key]) => key.toUpperCase() === name);
+  return typeof entry?.[1] === 'string' ? entry[1] : undefined;
+}
+export async function discoverCodexCommand(env = process.env, platform = process.platform, nodeExecutable = process.execPath) {
+  const explicit = typeof env.CODEX_COMMAND === 'string' ? env.CODEX_COMMAND.trim() : '';
+  const pathValue = envValue(env, 'PATH') ?? '';
+  const separator = platform === 'win32' ? ';' : ':';
+  const commandNames = explicit && !isAbsolute(explicit)
+    ? [explicit]
+    : platform === 'win32' ? ['codex.cmd', 'codex.exe', 'codex.com', 'codex.bat'] : ['codex'];
+  const candidates = [];
+  if (explicit && isAbsolute(explicit)) candidates.push(explicit);
+  const directories = [dirname(nodeExecutable), ...pathValue.split(separator)];
+  for (const directory of directories) {
+    const cleaned = directory.trim().replace(/^"(.*)"$/, '$1');
+    if (!cleaned) continue;
+    for (const command of commandNames) candidates.push(join(cleaned, command));
+  }
+  const mode = platform === 'win32' ? fsConstants.F_OK : fsConstants.X_OK;
+  for (const candidate of candidates) {
+    if (/\r|\n|\0/.test(candidate)) continue;
+    if (await access(candidate, mode).then(() => true, () => false)) return resolve(candidate);
+  }
+  return undefined;
+}
+function managedEnvironment(home, component, codexCommand) {
+  return [
+    ['PERSONAL_DEVSPACE_HOME', home],
+    ['DEVSPACE_API_TOKEN', ''],
+    ...(component === 'runtime' && codexCommand ? [['CODEX_COMMAND', codexCommand]] : []),
+  ];
+}
 
 async function native(command, args) {
   return exec(command, args, { windowsHide: true, timeout: 30000, maxBuffer: 1024 * 1024 });
@@ -65,12 +100,12 @@ export async function installRecord(home = stateHome()) {
   await access(join(value.packageRoot, 'personal', 'bin.mjs'));
   return value;
 }
-export function taskXml({ home, component, root, node, sid }) {
+export function taskXml({ home, component, root, node, sid, codexCommand }) {
   if (!managedComponents.includes(component) || !/^S-1-5-[0-9-]+$/.test(sid)) throw new Error('Invalid desktop task identity');
   const label = jobName(home, component);
   const launcher = join(root, 'personal', 'bin', 'personal-launcher.exe');
   const args = ['--cwd', root, '--stdout', join(home, 'logs', `${component}.log`), '--stderr', join(home, 'logs', `${component}.error.log`),
-    '--env', `PERSONAL_DEVSPACE_HOME=${home}`, '--env', 'DEVSPACE_API_TOKEN=', '--', node, join(root, 'personal', 'bin.mjs'), component];
+    ...managedEnvironment(home, component, codexCommand).flatMap(([key, value]) => ['--env', `${key}=${value}`]), '--', node, join(root, 'personal', 'bin.mjs'), component];
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
 <RegistrationInfo><Description>PersonalDevSpace:${ownerId(home)}:${component}</Description><SecurityDescriptor>D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;${sid})</SecurityDescriptor></RegistrationInfo>
@@ -115,6 +150,7 @@ export async function registerJobs(home, root, selected = components, { record =
   await secureStateDirectory(home);
   await access(join(root, 'dist', 'server.js'));
   await mkdir(join(home, 'logs'), { recursive: true }); await mkdir(join(home, 'startup'), { recursive: true });
+  const codexCommand = selected.includes('runtime') ? await discoverCodexCommand() : undefined;
   if (process.platform === 'win32') {
     await access(join(root, 'personal', 'bin', 'personal-launcher.exe'));
     const { stdout } = await native(system('whoami.exe'), ['/user', '/fo', 'csv', '/nh']);
@@ -122,7 +158,7 @@ export async function registerJobs(home, root, selected = components, { record =
     for (const component of selected) {
       await windowsTask(home, component);
       const path = join(home, 'startup', `${component}.xml`);
-      await writeFile(path, `\ufeff${taskXml({ home, component, root, node: process.execPath, sid })}`, 'utf16le');
+      await writeFile(path, `\ufeff${taskXml({ home, component, root, node: process.execPath, sid, codexCommand })}`, 'utf16le');
       await native(system('schtasks.exe'), ['/Create', '/TN', jobName(home, component), '/XML', path, '/F']);
     }
   } else if (process.platform === 'darwin') {
@@ -132,7 +168,8 @@ export async function registerJobs(home, root, selected = components, { record =
       const existing = await readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
       if (existing && !existing.includes(`PersonalDevSpace:${ownerId(home)}`)) throw new Error('Unknown LaunchAgent owner');
       const args = [process.execPath, join(root, 'personal', 'bin.mjs'), component];
-      await writeFile(path, `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><!-- PersonalDevSpace:${ownerId(home)} --><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join('')}</array><key>WorkingDirectory</key><string>${xml(root)}</string><key>EnvironmentVariables</key><dict><key>PERSONAL_DEVSPACE_HOME</key><string>${xml(home)}</string><key>DEVSPACE_API_TOKEN</key><string></string></dict><key>RunAtLoad</key><${component === 'installer' ? 'false' : 'true'}/><key>ProcessType</key><string>Interactive</string><key>StandardOutPath</key><string>${xml(join(home, 'logs', `${component}.log`))}</string><key>StandardErrorPath</key><string>${xml(join(home, 'logs', `${component}.error.log`))}</string></dict></plist>\n`, { mode: 0o600 });
+      const environment = managedEnvironment(home, component, codexCommand).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('');
+      await writeFile(path, `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><!-- PersonalDevSpace:${ownerId(home)} --><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join('')}</array><key>WorkingDirectory</key><string>${xml(root)}</string><key>EnvironmentVariables</key><dict>${environment}</dict><key>RunAtLoad</key><${component === 'installer' ? 'false' : 'true'}/><key>ProcessType</key><string>Interactive</string><key>StandardOutPath</key><string>${xml(join(home, 'logs', `${component}.log`))}</string><key>StandardErrorPath</key><string>${xml(join(home, 'logs', `${component}.error.log`))}</string></dict></plist>\n`, { mode: 0o600 });
     }
   } else {
     const directory = join(homedir(), '.config', 'systemd', 'user'); await mkdir(directory, { recursive: true });
@@ -141,7 +178,8 @@ export async function registerJobs(home, root, selected = components, { record =
       const existing = await readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
       if (existing && !existing.includes(`PersonalDevSpace:${ownerId(home)}`)) throw new Error('Unknown systemd unit owner');
       const q = value => `"${String(value).replace(/([\\"])/g, '\\$1').replace(/%/g, '%%')}"`;
-      await writeFile(path, `[Unit]\nDescription=PersonalDevSpace:${ownerId(home)} ${component}\n[Service]\nType=simple\nWorkingDirectory=${q(root)}\nEnvironment=${q(`PERSONAL_DEVSPACE_HOME=${home}`)}\nEnvironment="DEVSPACE_API_TOKEN="\nExecStart=${q(process.execPath)} ${q(join(root, 'personal/bin.mjs'))} ${component}\nKillMode=control-group\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 });
+      const environment = managedEnvironment(home, component, codexCommand).map(([key, value]) => `Environment=${q(`${key}=${value}`)}\n`).join('');
+      await writeFile(path, `[Unit]\nDescription=PersonalDevSpace:${ownerId(home)} ${component}\n[Service]\nType=simple\nWorkingDirectory=${q(root)}\n${environment}ExecStart=${q(process.execPath)} ${q(join(root, 'personal/bin.mjs'))} ${component}\nKillMode=control-group\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 });
     }
     await native('systemctl', ['--user', 'daemon-reload']);
     for (const component of selected.filter(value => value !== 'installer')) await native('systemctl', ['--user', 'enable', `${jobName(home, component)}.service`]);
