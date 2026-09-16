@@ -42,7 +42,7 @@ test('upstream settings remain separate and pause corruption fails closed', asyn
 });
 test('native task identity is independent of API tokens and uses current-user GUI launcher ownership', () => {
   const home = join(tmpdir(), 'personal-example'); const text = taskXml({ home, root: 'C:\\example', node: 'C:\\node.exe', component: 'runtime', sid: 'S-1-5-21-123-456-789-1001', codexCommand: 'C:\\tools\\codex.cmd' });
-  assert.ok(text.includes(`PersonalDevSpace:${ownerId(home)}:runtime`)); assert.match(text, /LeastPrivilege/); assert.match(text, /InteractiveToken/);
+  assert.ok(text.includes(`PersonalDevSpace:${ownerId(home)}:runtime`)); assert.match(text, /HighestAvailable/); assert.match(text, /InteractiveToken/);
   assert.match(text, /personal-launcher\.exe/); assert.doesNotMatch(text, /TeamDevSpace|TDS|apiToken|ownerToken/);
   assert.match(text, /DEVSPACE_API_TOKEN=/, 'managed profiles clear inherited API credentials and use their own private file');
   assert.match(text, /CODEX_COMMAND=C:\\tools\\codex\.cmd/, 'runtime task pins the discovered Codex CLI path');

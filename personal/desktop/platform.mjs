@@ -110,7 +110,7 @@ export function taskXml({ home, component, root, node, sid, codexCommand }) {
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
 <RegistrationInfo><Description>PersonalDevSpace:${ownerId(home)}:${component}</Description><SecurityDescriptor>D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;${sid})</SecurityDescriptor></RegistrationInfo>
 <Triggers>${component === 'installer' ? '' : `<LogonTrigger><Enabled>true</Enabled><UserId>${sid}</UserId></LogonTrigger>`}</Triggers>
-<Principals><Principal id="User"><UserId>${sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
+<Principals><Principal id="User"><UserId>${sid}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
 <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><ExecutionTimeLimit>${component === 'installer' ? 'PT30M' : 'PT0S'}</ExecutionTimeLimit>${component === 'installer' ? '' : '<RestartOnFailure><Interval>PT1M</Interval><Count>3</Count></RestartOnFailure>'}</Settings>
 <Actions Context="User"><Exec><Command>${xml(launcher)}</Command><Arguments>${xml(args.map(quoted).join(' '))}</Arguments><WorkingDirectory>${xml(root)}</WorkingDirectory></Exec></Actions></Task>\n`;
 }
