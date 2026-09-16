@@ -17,7 +17,7 @@
 | Requirement | Evidence and decision |
 | --- | --- |
 | API Token | Keep isolated adapter. Every request validates the current private key; upstream OAuth stays intact. No private fields in the upstream config schema. |
-| CodeGraph | Keep a lazy Personal extension and local CLI initialization. Missing executable, malformed config, failed index or timed-out tool must not affect core tools. |
+| CodeGraph | Keep a thin Personal extension. When enabled, each opened checkout/worktree gets a missing workspace-local index initialized through the CodeGraph CLI; existing indexes remain CodeGraph-owned. Missing executable, malformed config, failed index or timed-out tool must not affect core tools. |
 | Remote memory | Remove implementation, tools, old CLI/config schema/tests/prompts. No remote-memory call in runtime, startup or tools. Explicit one-time migration removes retired local fields while preserving private rollback files. |
 | `waitTimeMs` | Pristine stable advertises only `yieldTimeMs`; the installed connector sends `waitTimeMs`. Keep a minimal alias, reject contradictory values before execution, retain tests. |
 | Home-relative skill paths | Pristine stable probe fails advertised `~/.../SKILL.md`. Resolve only registered/activated skill paths; reject unrelated home reads and traversal. |

@@ -54,7 +54,7 @@ import { openAiConversationScopeId } from "./request-meta.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 import { formatPathForPrompt } from "./skills.js";
 import { createWorkspaceStore } from "./workspace-store.js";
-import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
+import { formatAgentsPath, WorkspaceRegistry, type Workspace } from "./workspaces.js";
 import {
   getLocalAgentProviderAvailabilitySnapshot,
 } from "./local-agent-availability.js";
@@ -723,6 +723,7 @@ export function createMcpServer(
   processSessions: ProcessSessionManager,
   resolveLocalAgentProviders: () => LocalAgentProviderStatus[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
+  onWorkspaceOpened?: (workspace: Workspace) => Promise<void>,
 ): McpServer {
   const server = new McpServer(
     {
@@ -830,6 +831,7 @@ export function createMcpServer(
         { path, mode, baseRef },
         { conversationScopeId: openAiConversationScopeId(_meta) },
       );
+      await onWorkspaceOpened?.(workspace);
       if (config.widgets === "changes") {
         await reviewCheckpoints.initializeWorkspace({
           workspaceId: workspace.id,
@@ -1686,6 +1688,7 @@ export interface CreateServerOptions {
   // Personal entrypoint seams. Upstream CLI/config and default behavior stay unchanged.
   verifyAccessToken?: (token: string) => ReturnType<SingleUserOAuthProvider["verifyAccessToken"]> | undefined;
   registerTools?: (server: McpServer, workspaces: WorkspaceRegistry) => void;
+  onWorkspaceOpened?: (workspace: Workspace) => Promise<void>;
   dispose?: () => Promise<void>;
   createEventStore?: () => import("@modelcontextprotocol/sdk/server/streamableHttp.js").EventStore & { close(): void };
 }
@@ -1891,6 +1894,7 @@ export function createServer(
           processSessions,
           resolveLocalAgentProviders,
           incomingArtifactAdapters,
+          options.onWorkspaceOpened,
         );
         options.registerTools?.(server, workspaces);
         await server.connect(transport);

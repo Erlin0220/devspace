@@ -22,6 +22,10 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
         expiresAt: Math.floor(Date.now() / 1000) + 60, resource: new URL("/mcp", config.publicBaseUrl) });
     },
     registerTools: (server, workspaces) => codegraph.register(server, workspaces),
+    onWorkspaceOpened: async workspace => {
+      // CodeGraph stays optional: wait for initialization, but never make core workspace tools depend on it.
+      await codegraph.ensureInitialized(workspace.root).catch(() => {});
+    },
     createEventStore: () => replay.createStore(),
     dispose: async () => { replay.close(); await codegraph.close(); },
   };

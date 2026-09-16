@@ -6,7 +6,7 @@ the connector display name nor local historical tags define the upstream version
 
 ## Boundaries
 
-`src/personal` owns API Token verification, lazy CodeGraph and bounded SDK event
+`src/personal` owns API Token verification, workspace-triggered CodeGraph and bounded SDK event
 storage. `personal/desktop` owns the local Control Center, native tray adapter and
 OS lifecycle. Upstream `config.ts` and `user-config.ts` remain unchanged.
 
@@ -16,8 +16,11 @@ and home-relative **registered skill** reads. Default upstream OAuth and CLI rem
 available. Personal configuration is not passed to the upstream schema.
 
 There is no remote-memory client or memory tool in the Personal execution path.
-CodeGraph is optional and lazy; a missing executable or failed index only fails its
-own tool. The desktop has no enterprise gateway, enrollment, device binding, fleet
+CodeGraph is optional. When enabled, opening a workspace synchronously initializes
+a missing workspace-local `.codegraph/` index before returning; an existing index is
+left to CodeGraph's own sync/version logic. Initialization is best-effort, so a missing
+executable or failed index does not make core workspace/file/command tools unavailable.
+The desktop has no enterprise gateway, enrollment, device binding, fleet
 policy, tunnel owner or dependency on a Team installation. A user-managed external
 tunnel may still point at the Personal MCP endpoint; it is never reconfigured here.
 

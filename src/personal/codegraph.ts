@@ -13,6 +13,8 @@ export interface CodeGraphOptions {
   enabled?: boolean;
   command?: string;
   args?: string[];
+  initCommand?: string;
+  initArgs?: string[];
   startupTimeoutMs?: number;
   toolTimeoutMs?: number;
 }
@@ -34,27 +36,45 @@ function commandOptions(options: CodeGraphOptions) {
   return { command, args, startupTimeoutMs: timeout(options.startupTimeoutMs, 10_000), toolTimeoutMs: timeout(options.toolTimeoutMs, 60_000) };
 }
 
-// Optional, lazy, per-runtime client. A broken index/executable only fails this tool.
+function initializationOptions(options: CodeGraphOptions, root: string) {
+  const config = commandOptions(options);
+  const installed = join(process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"), "codegraph", "current");
+  const windows = process.platform === "win32";
+  let args = options.initArgs;
+  if (!args) {
+    if (options.args !== undefined) {
+      throw new Error("Custom Personal CodeGraph args require initArgs for automatic workspace initialization");
+    }
+    args = windows
+      ? [join(installed, "lib", "dist", "bin", "codegraph.js"), "init"]
+      : ["init"];
+  }
+  if (!Array.isArray(args) || args.some(arg => typeof arg !== "string")) {
+    throw new Error("Invalid Personal CodeGraph initArgs");
+  }
+  return { command: options.initCommand ?? config.command, args: [...args, root], toolTimeoutMs: config.toolTimeoutMs };
+}
+
+// Optional per-runtime client. Workspace initialization is separate; query transport stays thin.
 export class PersonalCodeGraph {
   private session?: Promise<{ client: Client; transport: StdioClientTransport }>;
   private initializations = new Map<string, Promise<void>>();
   private closed = false;
   constructor(private options: CodeGraphOptions) {}
 
-  private async initialize(root: string): Promise<void> {
-    const index = join(root, ".codegraph", "codegraph.db");
-    if (await access(index).then(() => true, () => false)) return;
+  async ensureInitialized(root: string): Promise<void> {
+    if (this.options.enabled !== true) return;
+    const marker = join(root, ".codegraph");
+    if (await access(marker).then(() => true, () => false)) return;
     const key = process.platform === "win32" ? root.toLowerCase() : root;
     if (!this.initializations.has(key)) {
       const operation = (async () => {
-        const config = commandOptions(this.options);
-        const serve = config.args.lastIndexOf("serve");
-        if (serve < 0) throw new Error("CodeGraph args must contain 'serve' to initialize an index");
-        await promisify(execFile)(config.command, [...config.args.slice(0, serve), "init", root, "-i"], {
+        const config = initializationOptions(this.options, root);
+        await promisify(execFile)(config.command, config.args, {
           cwd: root, windowsHide: true, timeout: config.toolTimeoutMs, maxBuffer: 64 * 1024,
           env: this.environment(),
         });
-        await access(index);
+        await access(marker);
       })().finally(() => this.initializations.delete(key));
       this.initializations.set(key, operation);
     }
@@ -87,7 +107,6 @@ export class PersonalCodeGraph {
   }
 
   async explore(root: string, query: string, maxFiles?: number) {
-    await this.initialize(root);
     const { client } = await this.connect();
     const result = await client.callTool({ name: "codegraph_explore", arguments: { projectPath: root, query, maxFiles } },
       undefined, { timeout: commandOptions(this.options).toolTimeoutMs });
@@ -100,10 +119,10 @@ export class PersonalCodeGraph {
     if (this.options.enabled !== true) return;
     server.registerTool("codegraph_explore", {
       title: "Explore code graph",
-      description: "Explore current source and call relationships before editing. Uses the opened workspace; initializes a missing local CodeGraph index. Optional extension failures do not affect core tools.",
+      description: "Explore current source and call relationships before editing. Uses the opened workspace. Optional extension failures do not affect core tools.",
       inputSchema: { workspaceId: z.string(), query: z.string().min(1), maxFiles: z.number().int().min(1).max(50).optional() },
       outputSchema: { result: z.string() },
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     }, async ({ workspaceId, query, maxFiles }) => {
       try { return await this.explore(workspaces.getWorkspace(workspaceId).root, query, maxFiles); }
       catch { const text = "CodeGraph is unavailable. Check personal.json and the local CodeGraph installation; core file/command tools remain available.";

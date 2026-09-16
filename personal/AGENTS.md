@@ -1,5 +1,10 @@
 # Personal Overlay maintenance
 
+Treat Personal as a thin overlay on the official stable upstream. Prefer
+Personal-only code and tiny optional core seams so upstream upgrades remain
+easy to replay; do not fork or duplicate upstream behavior unless a verified
+Personal requirement cannot be met otherwise.
+
 Read `README.md` here and `upstream.json` before changes. The official stable tag,
 peeled commit and package version must agree. Do not use local `v1.0.9`, `main` or
 any prerelease as the baseline. Preserve a recovery branch before rewriting the

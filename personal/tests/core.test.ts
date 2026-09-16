@@ -1,19 +1,22 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import test, { type TestContext } from 'node:test';
 import { mkdtemp, mkdir, readFile, rm, writeFile, access } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { loadConfig } from '../../src/config.js';
 import { createServer } from '../../src/server.js';
 import { personalExtensions } from '../../src/personal/index.js';
 import { ReplayPool } from '../../src/personal/replay.js';
-import { PersonalCodeGraph } from '../../src/personal/codegraph.js';
+import { PersonalCodeGraph, type CodeGraphOptions } from '../../src/personal/codegraph.js';
 import { WorkspaceRegistry } from '../../src/workspaces.js';
 
 const TOKEN = 'test-only-personal-token-not-a-real-secret';
-async function fixture(t: TestContext, codegraph: boolean | { command: string } = false) {
+const execFileAsync = promisify(execFile);
+async function fixture(t: TestContext, codegraph: boolean | CodeGraphOptions = false) {
   const root = await mkdtemp(join(tmpdir(), 'personal-core-'));
   const project = join(root, 'project'); await mkdir(project);
   const config = loadConfig({ DEVSPACE_CONFIG_DIR: join(root, 'config'), DEVSPACE_ALLOWED_ROOTS: project,
@@ -65,6 +68,36 @@ test('malformed optional CodeGraph configuration cannot prevent core startup', a
   const graph = await client.callTool({ name: 'codegraph_explore', arguments: { workspaceId: (opened.structuredContent as { workspaceId: string }).workspaceId, query: 'fixture' } });
   assert.equal(graph.isError, true); assert.match(JSON.stringify(graph), /CodeGraph is unavailable/);
   assert.ok((await client.listTools()).tools.some(tool => tool.name === 'exec_command'));
+});
+
+test('opening a workspace initializes missing CodeGraph once before returning', async t => {
+  const script = resolve('personal/tests/codegraph-fixture.mjs');
+  const f = await fixture(t, { command: process.execPath, args: [script, 'serve', '--mcp'], initArgs: [script, 'init'], toolTimeoutMs: 5000, startupTimeoutMs: 5000 });
+  const client = await f.connect();
+  const first = await client.callTool({ name: 'open_workspace', arguments: { path: f.project } });
+  assert.notEqual(first.isError, true);
+  assert.equal(await readFile(join(f.project, '.codegraph/init-count'), 'utf8'), 'x');
+  const second = await client.callTool({ name: 'open_workspace', arguments: { path: f.project } });
+  assert.notEqual(second.isError, true);
+  assert.equal(await readFile(join(f.project, '.codegraph/init-count'), 'utf8'), 'x');
+});
+
+test('checkout and managed worktree each get their own CodeGraph index', async t => {
+  const script = resolve('personal/tests/codegraph-fixture.mjs');
+  const f = await fixture(t, { command: process.execPath, args: [script, 'serve', '--mcp'], initArgs: [script, 'init'], toolTimeoutMs: 5000, startupTimeoutMs: 5000 });
+  await execFileAsync('git', ['init'], { cwd: f.project });
+  await writeFile(join(f.project, 'README.md'), 'fixture\n');
+  await execFileAsync('git', ['add', 'README.md'], { cwd: f.project });
+  await execFileAsync('git', ['-c', 'user.name=Personal Test', '-c', 'user.email=personal@example.invalid', 'commit', '-m', 'fixture'], { cwd: f.project });
+  const client = await f.connect();
+  const checkout = await client.callTool({ name: 'open_workspace', arguments: { path: f.project } });
+  assert.notEqual(checkout.isError, true);
+  assert.equal(await readFile(join(f.project, '.codegraph/init-count'), 'utf8'), 'x');
+  const worktree = await client.callTool({ name: 'open_workspace', arguments: { path: f.project, mode: 'worktree' } });
+  assert.notEqual(worktree.isError, true);
+  const root = (worktree.structuredContent as { root: string }).root;
+  assert.notEqual(root, f.project);
+  assert.equal(await readFile(join(root, '.codegraph/init-count'), 'utf8'), 'x');
 });
 
 test('wait alias is deterministic; conflicting aliases never execute a command', async t => {
@@ -161,9 +194,11 @@ test('oversize event invalidates its stream cursor instead of replaying across a
 
 test('CodeGraph isolates configuration and initializes once for concurrent callers', async t => {
   const root = await mkdtemp(join(tmpdir(), 'personal-codegraph-')); t.after(() => rm(root, { recursive: true, force: true }));
-  const graph = new PersonalCodeGraph({ enabled: true, command: process.execPath, args: [resolve('personal/tests/codegraph-fixture.mjs'), 'serve', '--mcp'], toolTimeoutMs: 5000, startupTimeoutMs: 5000 });
+  const script = resolve('personal/tests/codegraph-fixture.mjs');
+  const graph = new PersonalCodeGraph({ enabled: true, command: process.execPath, args: [script, 'serve', '--mcp'], initArgs: [script, 'init'], toolTimeoutMs: 5000, startupTimeoutMs: 5000 });
   t.after(() => graph.close());
-  const results = await Promise.all([graph.explore(root, 'alpha'), graph.explore(root, 'beta')]);
+  await Promise.all([graph.ensureInitialized(root), graph.ensureInitialized(root)]);
   assert.equal(await readFile(join(root, '.codegraph/init-count'), 'utf8'), 'x');
+  const results = await Promise.all([graph.explore(root, 'alpha'), graph.explore(root, 'beta')]);
   for (const result of results) { assert.equal(result.isError, false); assert.match(result.structuredContent.result, /fixture/); }
 });
