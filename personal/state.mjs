@@ -2,9 +2,9 @@
 // Only local private-file operations are retained; no enterprise state/schema.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, chmod, rm, link } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { promisify } from 'node:util';
 
@@ -15,6 +15,19 @@ export async function privateDirectory(path) {
   await mkdir(path, { recursive: true, mode: 0o700 });
   if (process.platform !== 'win32') await chmod(path, 0o700);
 }
+async function waitForAclResult(path, timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const result = (await readFile(path, 'utf8')).trim();
+      if (/^\d+$/.test(result)) return Number(result);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    await sleep(25);
+  }
+  throw new Error('Timed out securing Personal state directory');
+}
 export async function secureStateDirectory(home = stateHome()) {
   await privateDirectory(home);
   if (process.platform === 'win32') {
@@ -23,7 +36,22 @@ export async function secureStateDirectory(home = stateHome()) {
     const { stdout } = await exec(join(system, 'whoami.exe'), ['/user', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 10000 });
     const sid = /S-1-5-[0-9-]+/.exec(stdout)?.[0];
     if (!sid) throw new Error('Unable to resolve current Windows user SID');
-    await exec(join(system, 'icacls.exe'), [home, '/inheritance:r', '/grant:r', `*${sid}:(OI)(CI)F`, '*S-1-5-18:(OI)(CI)F'], { windowsHide: true, timeout: 10000 });
+    const nonce = randomUUID();
+    const script = join(tmpdir(), `.secure-state-${nonce}.cmd`);
+    const result = join(tmpdir(), `.secure-state-${nonce}.result`);
+    await writeFile(script, '@echo off\r\nsetlocal DisableDelayedExpansion\r\n"%SystemRoot%\\System32\\icacls.exe" "%PERSONAL_ACL_HOME%" /inheritance:r /grant:r "*%PERSONAL_ACL_SID%:(OI)(CI)F" "*S-1-5-18:(OI)(CI)F" >nul 2>&1\r\n> "%PERSONAL_ACL_RESULT%" echo %ERRORLEVEL%\r\nendlocal\r\n', { flag: 'wx', mode: 0o600 });
+    try {
+      const child = spawn(join(system, 'cmd.exe'), ['/d', '/c', script], {
+        windowsHide: true, stdio: 'ignore',
+        env: { ...process.env, PERSONAL_ACL_HOME: home, PERSONAL_ACL_SID: sid, PERSONAL_ACL_RESULT: result },
+      });
+      await new Promise((resolveSpawn, reject) => { child.once('spawn', resolveSpawn); child.once('error', reject); });
+      child.unref();
+      const code = await waitForAclResult(result);
+      if (code !== 0) throw new Error(`Unable to secure Personal state directory (icacls exit ${code})`);
+    } finally {
+      await Promise.all([rm(script, { force: true }), rm(result, { force: true })]);
+    }
   }
 }
 export async function readJson(path, fallback) {

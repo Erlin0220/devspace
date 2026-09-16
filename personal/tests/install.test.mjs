@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { activateCandidate } from '../install.mjs';
 import { importLegacy } from '../legacy-import.mjs';
-import { atomicJson } from '../state.mjs';
+import { atomicJson, secureStateDirectory } from '../state.mjs';
 
 test('installer never switches after a partial stop', async () => {
   const calls = [];
@@ -33,6 +33,10 @@ test('install preserves pause intent without briefly starting the runtime', asyn
 test('rollback failures are explicit rather than claiming successful recovery', async () => {
   await assert.rejects(activateCandidate({ paused: false, stop: async () => {}, select: async () => { throw new Error('select'); },
     restore: async () => { throw new Error('rollback'); } }), /rollback needs attention/);
+});
+test('Windows state ACL hardening completes without waiting for icacls process handles', { skip: process.platform !== 'win32' }, async t => {
+  const home = await mkdtemp(join(tmpdir(), 'personal-acl-')); t.after(() => rm(home, { recursive: true, force: true }));
+  await secureStateDirectory(home);
 });
 test('one-time import separates token and extension settings and discards retired keys', async t => {
   const root = await mkdtemp(join(tmpdir(), 'personal-import-')); t.after(() => rm(root, { recursive: true, force: true }));
