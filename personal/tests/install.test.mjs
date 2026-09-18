@@ -34,8 +34,9 @@ test('rollback failures are explicit rather than claiming successful recovery', 
   await assert.rejects(activateCandidate({ paused: false, stop: async () => {}, select: async () => { throw new Error('select'); },
     restore: async () => { throw new Error('rollback'); } }), /rollback needs attention/);
 });
-test('Windows state ACL hardening completes without waiting for icacls process handles', { skip: process.platform !== 'win32' }, async t => {
+test('Windows state ACL hardening completes without waiting for icacls process handles and is idempotent', { skip: process.platform !== 'win32' }, async t => {
   const home = await mkdtemp(join(tmpdir(), 'personal-acl-')); t.after(() => rm(home, { recursive: true, force: true }));
+  await secureStateDirectory(home);
   await secureStateDirectory(home);
 });
 test('one-time import separates token and extension settings and discards retired keys', async t => {
