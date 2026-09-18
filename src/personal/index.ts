@@ -3,6 +3,7 @@ import type { ServerConfig } from "../config.js";
 import type { CreateServerOptions } from "../server.js";
 import { PersonalCodeGraph, type CodeGraphOptions } from "./codegraph.js";
 import { ReplayPool } from "./replay.js";
+import { PersonalSubagents } from "./subagents.js";
 
 export interface PersonalExtensionsConfig { apiToken?: string; codegraph?: CodeGraphOptions }
 
@@ -12,6 +13,7 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
   }
   const expected = personal.apiToken === undefined ? undefined : createHash("sha256").update(personal.apiToken).digest();
   const codegraph = new PersonalCodeGraph(personal.codegraph ?? {});
+  const subagents = new PersonalSubagents(config);
   const replay = new ReplayPool();
   return {
     verifyAccessToken: token => {
@@ -21,7 +23,10 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
       return Promise.resolve({ token, clientId: "personal-api-token", scopes: [...config.oauth.scopes],
         expiresAt: Math.floor(Date.now() / 1000) + 60, resource: new URL("/mcp", config.publicBaseUrl) });
     },
-    registerTools: (server, workspaces) => codegraph.register(server, workspaces),
+    registerTools: (server, workspaces) => {
+      codegraph.register(server, workspaces);
+      subagents.register(server, workspaces);
+    },
     onWorkspaceOpened: async workspace => {
       // CodeGraph stays optional: wait for initialization, but never make core workspace tools depend on it.
       await codegraph.ensureInitialized(workspace.root).catch(() => {});

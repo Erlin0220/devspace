@@ -6,12 +6,16 @@ import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Result } from 'better-result';
 import { loadConfig } from '../../src/config.js';
 import { createServer } from '../../src/server.js';
 import { personalExtensions } from '../../src/personal/index.js';
 import { ReplayPool } from '../../src/personal/replay.js';
 import { PersonalCodeGraph, type CodeGraphOptions } from '../../src/personal/codegraph.js';
+import { PersonalSubagents } from '../../src/personal/subagents.js';
 import { WorkspaceRegistry } from '../../src/workspaces.js';
 
 const TOKEN = 'test-only-personal-token-not-a-real-secret';
@@ -49,6 +53,52 @@ test('API token stays separate from OAuth; invalid credentials are rejected', as
   assert.equal(extension.verifyAccessToken?.('wrong'), undefined);
   assert.equal((await extension.verifyAccessToken?.(TOKEN))?.clientId, 'personal-api-token');
   await extension.dispose?.();
+});
+
+test('native subagent tools bridge the existing agent runtime without MCP App metadata', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'personal-subagents-'));
+  const project = join(root, 'project'); await mkdir(project);
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const loaded = loadConfig({ DEVSPACE_CONFIG_DIR: join(root, 'config'), DEVSPACE_ALLOWED_ROOTS: project,
+    DEVSPACE_STATE_DIR: join(root, 'state'), DEVSPACE_WORKTREE_ROOT: join(root, 'worktrees'), DEVSPACE_AGENT_DIR: join(root, 'agents'),
+    DEVSPACE_OAUTH_OWNER_TOKEN: 'separate-test-only-oauth-owner-token', DEVSPACE_TOOL_MODE: 'codex', DEVSPACE_WIDGETS: 'off',
+    DEVSPACE_SUBAGENTS: 'true', DEVSPACE_LOG_LEVEL: 'error', HOST: '127.0.0.1', PORT: '1', DEVSPACE_PUBLIC_BASE_URL: 'http://127.0.0.1:1' });
+  const config = { ...loaded, subagents: { enabled: true, providers: [{ id: 'codex' as const, enabled: true, model: 'gpt-5.6-luna', effort: 'high' }] } };
+  const workspaces = new WorkspaceRegistry(config);
+  const workspace = (await workspaces.openWorkspace(project)).workspace;
+  const baseRecord = { id: 'agt_test', workspaceId: workspace.id, workspaceRoot: project, profileName: 'codex-explorer',
+    provider: 'codex', model: 'gpt-5.6-luna', effort: 'high', status: 'running' as const,
+    createdAt: '2026-09-18T00:00:00.000Z', updatedAt: '2026-09-18T00:00:00.000Z' };
+  const calls: string[] = [];
+  const subagents = new PersonalSubagents(config, {
+    start: async input => { calls.push('start:' + input.target); return Result.ok(baseRecord); },
+    get: async id => { calls.push('get:' + id); return Result.ok({ ...baseRecord, status: 'idle' as const, latestResponse: 'EXPLORER_OK' }); },
+    continue: async id => { calls.push('continue:' + id); return Result.ok(baseRecord); },
+    list: async () => { calls.push('list'); return Result.ok([{ ...baseRecord, status: 'idle' as const }]); },
+  });
+  const server = new McpServer({ name: 'subagent-test', version: '1' });
+  subagents.register(server, workspaces);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'subagent-test-client', version: '1' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  t.after(async () => { await client.close(); await server.close(); });
+
+  const tools = (await client.listTools()).tools;
+  for (const name of ['run_agent', 'get_agent', 'continue_agent', 'list_agents']) {
+    const tool = tools.find(entry => entry.name === name);
+    assert.ok(tool, name + ' should be registered');
+    assert.doesNotMatch(JSON.stringify(tool), /resourceUri|ui\/resource/i);
+  }
+  const run = await client.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex-explorer', prompt: 'inspect' } });
+  assert.deepEqual(run.structuredContent, { id: 'agt_test', status: 'running' });
+  const get = await client.callTool({ name: 'get_agent', arguments: { workspaceId: workspace.id, agentId: 'agt_test' } });
+  assert.equal((get.structuredContent as { status?: string }).status, 'completed');
+  assert.equal((get.structuredContent as { response?: string }).response, 'EXPLORER_OK');
+  const continued = await client.callTool({ name: 'continue_agent', arguments: { workspaceId: workspace.id, agentId: 'agt_test', prompt: 'follow up' } });
+  assert.deepEqual(continued.structuredContent, { id: 'agt_test', status: 'running' });
+  const listed = await client.callTool({ name: 'list_agents', arguments: { workspaceId: workspace.id } });
+  assert.deepEqual(listed.structuredContent, { agents: [{ id: 'agt_test', status: 'completed', target: 'codex-explorer' }] });
+  assert.deepEqual(calls, ['start:codex-explorer', 'get:agt_test', 'continue:agt_test', 'list']);
 });
 
 test('failed optional CodeGraph cannot block core open/read/command tools', async t => {

@@ -6,7 +6,8 @@ the connector display name nor local historical tags define the upstream version
 
 ## Boundaries
 
-`src/personal` owns API Token verification, workspace-triggered CodeGraph and bounded SDK event
+`src/personal` owns API Token verification, workspace-triggered CodeGraph, the thin
+native MCP bridge to the existing DevSpace subagent runtime, and bounded SDK event
 storage. `personal/desktop` owns the local Control Center, native tray adapter and
 OS lifecycle. Upstream `config.ts` and `user-config.ts` remain unchanged.
 
