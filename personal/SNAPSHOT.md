@@ -5,7 +5,7 @@ commit `15ce088b890142eb7922c156e01aa637b700cb24`.
 
 | Snapshot source | Personal adaptation |
 | --- | --- |
-| `client/local-control.mjs` | Loopback capability, stable-port retry/fallback, origin binding and optional endpoint cache |
+| `client/local-control.mjs` | Loopback capability, stable-port retry/fallback and origin binding; the capability file is the single durable endpoint owner |
 | `client/desktop-controller.mjs` | Serialized operations, stale-refresh rejection, safe observers and expiring notices |
 | `client/state.mjs` | Private atomic JSON/file primitives only |
 | `client/control.*` | Overview/settings/update/diagnostic layout and visual tokens; plain DOM, no new framework |

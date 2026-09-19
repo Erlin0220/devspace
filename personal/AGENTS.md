@@ -26,8 +26,9 @@ restarted. Persistent apps and installers must be started through their OS owner
 not inside DevSpace/Windows MCP command trees. Touch only verified Personal jobs.
 Do not display credentials, read unrelated private stores or stop Team/tunnels.
 
-Run upstream tests plus `npm run test:personal`, native acceptance on the actual
-platform, and review `git diff --diff-filter=M <official-base> HEAD`. After a final
-clean commit use `node personal/verify.mjs`; an earlier artifact receipt does not
-authorize changed bytes. `node personal/upgrade.mjs replay` rehearses upgrade
-without fabricating a new upstream release. Commit and push only what was tested.
+Run upstream tests plus `npm run test:personal`, then `npm run personal:live`
+for native acceptance on the actual platform, and review
+`git diff --diff-filter=M <official-base> HEAD`. After a final clean commit use
+the single deterministic `npm run personal:release-check` action; it creates a
+fresh candidate manifest and rehearses the current-stable upgrade without
+fabricating a new upstream release. Commit and push only what was tested.

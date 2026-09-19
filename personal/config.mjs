@@ -8,9 +8,12 @@ export async function readPersonalConfig(home = stateHome()) {
   if (value?.schema !== 1 || (value.runtimeConfigDir !== undefined && !isAbsolute(value.runtimeConfigDir))) throw new Error('Invalid Personal configuration');
   if (value.projectRoot !== undefined && (typeof value.projectRoot !== 'string' || !isAbsolute(value.projectRoot))) throw new Error('Invalid Personal project directory');
   if (value.sourceRoot !== undefined && (typeof value.sourceRoot !== 'string' || !isAbsolute(value.sourceRoot))) throw new Error('Invalid Personal source directory');
+  if (value.codegraph !== undefined && (typeof value.codegraph !== 'object' || Array.isArray(value.codegraph)
+      || (value.codegraph.enabled !== undefined && typeof value.codegraph.enabled !== 'boolean'))) throw new Error('Invalid Personal CodeGraph configuration');
   const intent = await readJson(join(home, 'intent.json'), { paused: false });
   if (typeof intent?.paused !== 'boolean') throw new Error('Invalid Personal pause intent');
-  return { ...value, runtimeConfigDir: value.runtimeConfigDir ?? join(homedir(), '.devspace'), paused: intent.paused };
+  return { ...value, codegraph: { enabled: value.codegraph?.enabled === true },
+    runtimeConfigDir: value.runtimeConfigDir ?? join(homedir(), '.devspace'), paused: intent.paused };
 }
 export async function readPersonalAuth(home = stateHome(), env = process.env) {
   const auth = await readJson(join(home, 'auth.json'), {});
@@ -19,9 +22,7 @@ export async function readPersonalAuth(home = stateHome(), env = process.env) {
   return { apiToken };
 }
 export function runtimeEnvironment(config, env = process.env) {
-  const runtimeEnv = config.runtimeEnv ?? {};
-  if (typeof runtimeEnv !== 'object' || Array.isArray(runtimeEnv) || Object.entries(runtimeEnv).some(([key, value]) => !/^DEVSPACE_[A-Z0-9_]+$/.test(key) || typeof value !== 'string')) throw new Error('Invalid upstream environment overrides');
-  const result = { DEVSPACE_TOOL_MODE: 'codex', DEVSPACE_WIDGETS: 'off', ...env, ...runtimeEnv, DEVSPACE_CONFIG_DIR: config.runtimeConfigDir };
+  const result = { ...env, DEVSPACE_TOOL_MODE: 'codex', DEVSPACE_WIDGETS: 'off', DEVSPACE_CONFIG_DIR: config.runtimeConfigDir };
   if (config.projectRoot) result.DEVSPACE_ALLOWED_ROOTS = config.projectRoot;
   return result;
 }

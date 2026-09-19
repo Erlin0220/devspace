@@ -120,15 +120,20 @@ test('malformed optional CodeGraph configuration cannot prevent core startup', a
   assert.ok((await client.listTools()).tools.some(tool => tool.name === 'exec_command'));
 });
 
-test('opening a workspace initializes missing CodeGraph once before returning', async t => {
+test('opening a workspace never waits for CodeGraph; first explore initializes once', async t => {
   const script = resolve('personal/tests/codegraph-fixture.mjs');
   const f = await fixture(t, { command: process.execPath, args: [script, 'serve', '--mcp'], initArgs: [script, 'init'], toolTimeoutMs: 5000, startupTimeoutMs: 5000 });
   const client = await f.connect();
   const first = await client.callTool({ name: 'open_workspace', arguments: { path: f.project } });
   assert.notEqual(first.isError, true);
+  await assert.rejects(readFile(join(f.project, '.codegraph/init-count'), 'utf8'));
+  const workspaceId = (first.structuredContent as { workspaceId: string }).workspaceId;
+  const explored = await client.callTool({ name: 'codegraph_explore', arguments: { workspaceId, query: 'fixture' } });
+  assert.notEqual(explored.isError, true);
   assert.equal(await readFile(join(f.project, '.codegraph/init-count'), 'utf8'), 'x');
   const second = await client.callTool({ name: 'open_workspace', arguments: { path: f.project } });
   assert.notEqual(second.isError, true);
+  await client.callTool({ name: 'codegraph_explore', arguments: { workspaceId, query: 'fixture again' } });
   assert.equal(await readFile(join(f.project, '.codegraph/init-count'), 'utf8'), 'x');
 });
 
@@ -142,11 +147,15 @@ test('checkout and managed worktree each get their own CodeGraph index', async t
   const client = await f.connect();
   const checkout = await client.callTool({ name: 'open_workspace', arguments: { path: f.project } });
   assert.notEqual(checkout.isError, true);
+  const checkoutId = (checkout.structuredContent as { workspaceId: string }).workspaceId;
+  await client.callTool({ name: 'codegraph_explore', arguments: { workspaceId: checkoutId, query: 'checkout' } });
   assert.equal(await readFile(join(f.project, '.codegraph/init-count'), 'utf8'), 'x');
   const worktree = await client.callTool({ name: 'open_workspace', arguments: { path: f.project, mode: 'worktree' } });
   assert.notEqual(worktree.isError, true);
-  const root = (worktree.structuredContent as { root: string }).root;
+  const worktreeContext = worktree.structuredContent as { root: string; workspaceId: string };
+  const root = worktreeContext.root;
   assert.notEqual(root, f.project);
+  await client.callTool({ name: 'codegraph_explore', arguments: { workspaceId: worktreeContext.workspaceId, query: 'worktree' } });
   assert.equal(await readFile(join(root, '.codegraph/init-count'), 'utf8'), 'x');
 });
 

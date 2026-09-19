@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer, request as httpRequest } from 'node:http';
 import { randomInt } from 'node:crypto';
-import { chmod, mkdtemp, rm, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { createDesktopController } from '../desktop/controller.mjs';
@@ -36,8 +36,11 @@ test('transient notices expire rather than becoming permanent error-looking bann
 });
 test('upstream settings remain separate and pause corruption fails closed', async t => {
   const home = await mkdtemp(join(tmpdir(), 'personal-config-')); t.after(() => rm(home, { recursive: true, force: true }));
-  const config = { runtimeConfigDir: home, projectRoot: home, runtimeEnv: { DEVSPACE_SUBAGENTS: 'true' } };
-  assert.equal(runtimeEnvironment(config, {}).DEVSPACE_SUBAGENTS, 'true'); assert.equal(runtimeEnvironment(config, {}).DEVSPACE_CONFIG_DIR, home);
+  const config = { runtimeConfigDir: home, projectRoot: home, runtimeEnv: { DEVSPACE_SUBAGENTS: 'retired-snapshot' } };
+  const runtime = runtimeEnvironment(config, { DEVSPACE_SUBAGENTS: 'true', DEVSPACE_TOOL_MODE: 'other', DEVSPACE_WIDGETS: 'changes',
+    DEVSPACE_CONFIG_DIR: 'wrong', DEVSPACE_ALLOWED_ROOTS: 'wrong' });
+  assert.equal(runtime.DEVSPACE_SUBAGENTS, 'true'); assert.equal(runtime.DEVSPACE_CONFIG_DIR, home);
+  assert.equal(runtime.DEVSPACE_TOOL_MODE, 'codex'); assert.equal(runtime.DEVSPACE_WIDGETS, 'off'); assert.equal(runtime.DEVSPACE_ALLOWED_ROOTS, home);
   await atomicJson(join(home, 'intent.json'), { paused: 'invalid' }); await assert.rejects(readPersonalConfig(home), /pause intent/);
 });
 test('native task identity is independent of API tokens and uses current-user GUI launcher ownership', () => {
@@ -70,11 +73,10 @@ test('Control Center uses the Personal logo and keeps manual status checks out o
   assert.match(script, /requestAction === 'check'/);
 });
 
-async function webFixture(t, { collide = false, cacheFailure = false } = {}) {
+async function webFixture(t, { collide = false } = {}) {
   const home = await mkdtemp(join(tmpdir(), 'personal-control-')); const port = randomInt(50000, 65000);
   let blocker;
   if (collide) { blocker = createServer((_req, res) => res.end('other application')); await bindPort(blocker, port); }
-  if (cacheFailure) await mkdir(join(home, 'control-endpoint.json'));
   const events = [];
   const controller = { snapshot: () => ({ status: 'ready', running: true }), dispatch: async (action, value) => { events.push([action, value]); return action === 'choose-folder' ? 'C:\\project' : { ok: true }; } };
   const web = await startLocalControl(controller, { home, preferredPort: port, retryAttempts: 1, retryDelayMs: 1 });
@@ -108,8 +110,12 @@ test('busy preferred port falls back and preserves the other application', async
   assert.equal((await f.request('/api/state')).status, 200);
   const credential = JSON.parse(await readFile(join(f.home, 'control-capability.json'), 'utf8')); assert.equal(credential.port, f.web.port);
 });
-test('unwritable endpoint cache cannot take down the Control Center', async t => {
-  const f = await webFixture(t, { cacheFailure: true }); assert.equal(f.web.endpointPersisted, false); assert.equal((await f.request('/api/state')).status, 200);
+test('control capability is the single durable endpoint owner', async t => {
+  const f = await webFixture(t);
+  const credential = JSON.parse(await readFile(join(f.home, 'control-capability.json'), 'utf8'));
+  assert.equal(credential.port, f.web.port);
+  await assert.rejects(access(join(f.home, 'control-endpoint.json')));
+  assert.equal((await f.request('/api/state')).status, 200);
 });
 test('corrupted mandatory control credentials fail closed without invoking core operations', async t => {
   const home = await mkdtemp(join(tmpdir(), 'personal-corrupt-')); t.after(() => rm(home, { recursive: true, force: true }));

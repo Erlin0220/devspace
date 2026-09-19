@@ -43,8 +43,7 @@ export async function startLocalControl(controller, { home = stateHome(), prefer
     credential = await readJson(path);
   }
   if (!validCapability(credential)) throw new Error('本地控制凭据无效；拒绝启动控制页面');
-  const cache = await readJson(join(home, 'control-endpoint.json'), null).catch(() => null);
-  const requested = credential.port ?? (validPort(cache?.port) ? cache.port : preferredPort);
+  const requested = credential.port ?? preferredPort;
   let token = credential.token, authorization = Buffer.from(`Bearer ${token}`), origin;
   const instance = randomUUID();
   const loaded = new Map(await Promise.all(Object.entries(assets).map(async ([url, [file, type]]) => [url, { bytes: await readFile(new URL(file, import.meta.url)), type }])));
@@ -68,9 +67,9 @@ export async function startLocalControl(controller, { home = stateHome(), prefer
       const body = await readBody(request);
       if (!body || typeof body !== 'object' || Array.isArray(body) || !actions.has(body.action) || Object.keys(body).some(key => !['action', 'projectRoot'].includes(key))) throw failure('未知控制操作');
       if (body.action === 'project-root' && (typeof body.projectRoot !== 'string' || !body.projectRoot.trim() || body.projectRoot.length > 4096 || /[\r\n\0]/.test(body.projectRoot))) throw failure('项目目录无效');
-      if (body.action === 'update-prepare') {
+      if (['update-prepare', 'update-apply'].includes(body.action)) {
         if (controller.snapshot().busy) throw failure('已有操作正在进行', 409);
-        // Acknowledge before lengthy Git/tests. Progress and the final error live in the controller.
+        // Acknowledge before lengthy Git/tests/install. Progress and the final error live in the controller.
         void controller.dispatch(body.action).catch(() => {});
         return send(202, { accepted: true });
       }
@@ -94,11 +93,10 @@ export async function startLocalControl(controller, { home = stateHome(), prefer
     if (!server.listening) throw lastError ?? new Error('无法绑定本地控制端口');
     const port = server.address().port;
     if (port !== requested || (credential.port !== undefined && port !== credential.port)) { token = randomSecret(); authorization = Buffer.from(`Bearer ${token}`); }
-    // Credential origin affinity is mandatory; endpoint discovery cache is optional.
+    // The capability file is the single durable endpoint owner.
     await atomicJson(path, { schema: 1, token, port });
-    const endpointPersisted = await atomicJson(join(home, 'control-endpoint.json'), { schema: 1, port }).then(() => true, () => false);
     origin = `http://127.0.0.1:${port}`;
-    return { port, origin, url: `${origin}/#${token}`, endpointPersisted, open: () => openBrowser(`${origin}/#${token}`),
+    return { port, origin, url: `${origin}/#${token}`, open: () => openBrowser(`${origin}/#${token}`),
       close: () => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }) };
   } catch (error) { if (server.listening) { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); } throw error; }
 }

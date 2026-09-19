@@ -19,6 +19,20 @@ import { WorkspaceRegistry } from "./workspaces.js";
 
 const execFileAsync = promisify(execFile);
 
+test("server metadata routes real project execution to DevSpace without forcing conceptual requests", async (t) => {
+  const context = await fixture(t);
+  const instructions = context.client.getInstructions() ?? "";
+  const serverVersion = context.client.getServerVersion();
+
+  assert.match(
+    instructions,
+    /actually inspect, modify, fix, run, test, build, install, commit, push/i,
+  );
+  assert.match(instructions, /perform the work instead of replying with manual steps or command snippets/i);
+  assert.match(instructions, /asks only for an explanation, comparison, or a plan without execution/i);
+  assert.match(serverVersion?.description ?? "", /actually work on a local project/i);
+});
+
 test("open_workspace keeps lifecycle flags out of model output and preserves complete card metadata", async (t) => {
   const providerNote = "available";
   const context = await fixture(t, {

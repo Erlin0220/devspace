@@ -107,6 +107,7 @@ export class PersonalCodeGraph {
   }
 
   async explore(root: string, query: string, maxFiles?: number) {
+    await this.ensureInitialized(root);
     const { client } = await this.connect();
     const result = await client.callTool({ name: "codegraph_explore", arguments: { projectPath: root, query, maxFiles } },
       undefined, { timeout: commandOptions(this.options).toolTimeoutMs });

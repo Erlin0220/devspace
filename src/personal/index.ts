@@ -27,10 +27,6 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
       codegraph.register(server, workspaces);
       subagents.register(server, workspaces);
     },
-    onWorkspaceOpened: async workspace => {
-      // CodeGraph stays optional: wait for initialization, but never make core workspace tools depend on it.
-      await codegraph.ensureInitialized(workspace.root).catch(() => {});
-    },
     createEventStore: () => replay.createStore(),
     dispose: async () => { replay.close(); await codegraph.close(); },
   };

@@ -17,7 +17,7 @@
 | Requirement | Evidence and decision |
 | --- | --- |
 | API Token | Keep isolated adapter. Every request validates the current private key; upstream OAuth stays intact. No private fields in the upstream config schema. |
-| CodeGraph | Keep a thin Personal extension. When enabled, each opened checkout/worktree gets a missing workspace-local index initialized through the CodeGraph CLI; existing indexes remain CodeGraph-owned. Missing executable, malformed config, failed index or timed-out tool must not affect core tools. |
+| CodeGraph | Keep a thin Personal extension. Workspace open never waits for it; the first graph query initializes a missing workspace-local index through the CodeGraph CLI. Existing indexes remain CodeGraph-owned. Missing executable, malformed config, failed index or timed-out tool must not affect core tools. |
 | Remote memory | Remove implementation, tools, old CLI/config schema/tests/prompts. No remote-memory call in runtime, startup or tools. Explicit one-time migration removes retired local fields while preserving private rollback files. |
 | `waitTimeMs` | Pristine stable advertises only `yieldTimeMs`; the installed connector sends `waitTimeMs`. Keep a minimal alias, reject contradictory values before execution, retain tests. |
 | Home-relative skill paths | Pristine stable probe fails advertised `~/.../SKILL.md`. Resolve only registered/activated skill paths; reject unrelated home reads and traversal. |
@@ -39,19 +39,20 @@ successful structured task enumeration distinguishes absence from query failure.
 Only verified Personal task names and launcher paths can be stopped or replaced.
 An independent OS installer, not an MCP child process, owns runtime replacement.
 
-Optional control-port conflicts, endpoint caches, tray observers and diagnostic
+Optional control-port conflicts, tray observers and diagnostic
 projection failures do not roll back a healthy core. Pause intent survives
 restart/install. Partial stop refuses activation; failed candidate readiness
 restores the previous runtime; rollback failure is reported explicitly. Installation
 requires verified application bytes, the tested Node version, private auth and a
-trustworthy idle state. A queued install is not reported as completed.
+trustworthy idle state. Shell commands and active subagent turns both block a
+switch. One `install-attempt.json` owns queue/progress/result state.
 
 ## Recorded verification and limits
 
 The pristine stable worktree and the overlay each passed the full upstream
-`npm test` command. The overlay passed typecheck/build, 32 Personal regressions,
-and Windows native Rust tests/GUI-subsystem checks. The native helpers total
-764,928 bytes; no Node/browser/Team binary is committed to this overlay.
+`npm test` command. The overlay passed typecheck/build, Personal regressions,
+and Windows native Rust tests/GUI-subsystem checks. No Node/browser/Team binary is
+introduced as a Personal runtime dependency.
 
 An independently Task-Scheduler-owned fixture passed real MCP authentication,
 command execution, `apply_patch`, the installed CodeGraph executable and a native
@@ -69,6 +70,7 @@ pass, a successful Swift compile or a tray-visible protocol event is not proof o
 interactive macOS install/update acceptance. Report its actual CI/native status.
 
 Final per-revision verification, worktree replay and installation outcomes are
-recorded in ignored `.personal-review` receipts and private installation state,
-not hard-coded here. `install-result.json` and the health endpoint's exact overlay
-commit are required before claiming that the real installed Runtime was replaced.
+recorded in the ignored `.personal-review/candidate.json` manifest and private
+installation state, not hard-coded here. A terminal installed attempt and the
+health endpoint's exact overlay commit are required before claiming that the real
+installed Runtime was replaced.

@@ -6,51 +6,84 @@ import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { atomicJson, readJson, stateHome } from '../state.mjs';
 import { approvedProjectRoot, readPersonalConfig } from '../config.mjs';
-import { runtimeSettings } from '../runtime.mjs';
+import { agentDaemonStatus, runtimeSettings } from '../runtime.mjs';
 import { discoverStable, prepareStable } from '../upgrade.mjs';
 import { createDesktopController } from './controller.mjs';
 import { startLocalControl } from './local-control.mjs';
-import { chooseFolder, installRecord, jobAction, openBrowser, openLogs, ownerId, registerDesktopEntries, registerJobs } from './platform.mjs';
+import { chooseFolder, installRecord, jobAction, jobStatus, openBrowser, openLogs, ownerId, registerDesktopEntries, registerJobs, serviceComponents } from './platform.mjs';
 import semver from 'semver';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const baseline = JSON.parse(await readFile(new URL('../upstream.json', import.meta.url), 'utf8'));
+async function candidateStatus(home) {
+  const review = await readJson(join(home, 'upgrade-review.json'), null).catch(() => null);
+  if (!review?.candidate || !review.candidateHead) return review;
+  const manifest = await readJson(join(review.candidate, '.personal-review', 'candidate.json'), null).catch(() => null);
+  const attempt = await readJson(join(home, 'install-attempt.json'), null).catch(() => null);
+  const applied = attempt?.status === 'installed' && attempt.candidateHead === review.candidateHead;
+  return { ...review,
+    status: applied ? 'applied' : review.status,
+    version: manifest?.upstream?.version,
+    branch: manifest?.branch,
+    verifiedAt: manifest?.verifiedAt,
+    tests: manifest?.stages };
+}
 export async function status(home = stateHome()) {
   const { config, personal, auth } = await runtimeSettings(home);
   const origin = `http://127.0.0.1:${config.port}`;
   const probe = await fetch(`${origin}/personal-healthz`, { signal: AbortSignal.timeout(2000) }).then(async response => response.ok ? response.json() : null).catch(() => null);
+  const agentd = await agentDaemonStatus(home, config).catch(error => ({ activeTurns: null, runtimeCount: null, error: error.message }));
   return { running: probe?.name === 'personal-devspace' && probe.owner === ownerId(home), paused: personal.paused,
     version: baseline.version, projectRoot: personal.projectRoot ?? (config.allowedRoots.length === 1 ? config.allowedRoots[0] : undefined),
     allowedRoots: config.allowedRoots, endpoint: `${origin}/mcp`,
     apiTokenConfigured: Boolean(auth.apiToken), codegraphEnabled: personal.codegraph?.enabled === true,
     runningProcesses: probe?.owner === ownerId(home) ? probe.runningProcesses ?? 0 : 0,
+    activeAgentTurns: agentd.activeTurns, agentRuntimeCount: agentd.runtimeCount, agentStatusError: agentd.error,
     overlayCommit: probe?.owner === ownerId(home) ? probe.overlayCommit : undefined,
-    candidate: await readJson(join(home, 'upgrade-review.json'), null).catch(() => null),
-    installation: await readJson(join(home, 'install-result.json'), null).catch(() => null) };
+    candidate: await candidateStatus(home),
+    installation: await readJson(join(home, 'install-attempt.json'), null).catch(() => null) };
 }
 async function requireIdle(home) {
-  if ((await status(home)).runningProcesses > 0) throw new Error('仍有命令正在执行，请结束任务后再操作');
+  const snapshot = await status(home);
+  if (snapshot.runningProcesses > 0) throw new Error('仍有命令正在执行，请结束任务后再操作');
+  if (snapshot.activeAgentTurns > 0) throw new Error('仍有子代理任务正在执行，请结束任务后再操作');
+  if (snapshot.activeAgentTurns === null) throw new Error('无法确认子代理是否空闲，请检查诊断后再操作');
 }
 async function startReady(home) {
   await jobAction(home, 'runtime', 'start');
   for (let i = 0; i < 60; i++) { if ((await status(home)).running) return; await sleep(250); }
   throw new Error('Runtime 未能启动，请查看诊断日志');
 }
+async function stopReady(home) {
+  await jobAction(home, 'runtime', 'stop');
+  for (let i = 0; i < 40; i++) { if (!(await status(home)).running) return; await sleep(100); }
+  throw new Error('Runtime owner stopped but the health endpoint is still responding');
+}
 export function operations(home = stateHome()) {
   return {
     status: () => status(home),
-    suspend: async () => { await requireIdle(home); await atomicJson(join(home, 'intent.json'), { paused: true }); await jobAction(home, 'runtime', 'stop'); },
+    start: async () => {
+      if (!(await readPersonalConfig(home)).paused) await startReady(home);
+      await jobAction(home, 'desktop', 'start');
+    },
+    stop: async () => {
+      await requireIdle(home);
+      const results = await Promise.allSettled([stopReady(home), jobAction(home, 'desktop', 'stop')]);
+      const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
+      if (failures.length) throw new AggregateError(failures, 'Some Personal services could not be stopped');
+    },
+    suspend: async () => { await requireIdle(home); await atomicJson(join(home, 'intent.json'), { paused: true }); await stopReady(home); },
     resume: async () => {
       await atomicJson(join(home, 'intent.json'), { paused: false });
       try { await startReady(home); }
       catch (error) { await atomicJson(join(home, 'intent.json'), { paused: true }); throw error; }
     },
-    restart: async () => { await requireIdle(home); await jobAction(home, 'runtime', 'stop'); if (!(await readPersonalConfig(home)).paused) await startReady(home); },
+    restart: async () => { await requireIdle(home); await stopReady(home); if (!(await readPersonalConfig(home)).paused) await startReady(home); },
     repair: async () => {
       const installed = await installRecord(home);
-      // Re-registering the desktop entry does not restart a healthy Runtime.
-      await registerJobs(home, installed.packageRoot, ['desktop']);
+      // Re-register definitions only; a healthy Runtime is not restarted.
+      await registerJobs(home, installed.packageRoot, serviceComponents);
       let entryError; try { await registerDesktopEntries(home, installed.packageRoot); } catch (error) { entryError = error; }
       await jobAction(home, 'desktop', 'start');
       if (entryError) throw entryError;
@@ -61,30 +94,53 @@ export function operations(home = stateHome()) {
       if (before.projectRoot === root) return;
       const paused = (await readPersonalConfig(home)).paused;
       await requireIdle(home);
-      await jobAction(home, 'runtime', 'stop');
+      await stopReady(home);
       try { await atomicJson(join(home, 'personal.json'), { ...before, projectRoot: root }); if (!paused) await startReady(home); }
-      catch (error) { await jobAction(home, 'runtime', 'stop'); await atomicJson(join(home, 'personal.json'), before); if (!paused) await startReady(home); throw error; }
+      catch (error) { await stopReady(home).catch(() => {}); await atomicJson(join(home, 'personal.json'), before); if (!paused) await startReady(home); throw error; }
     },
     'choose-folder': async input => chooseFolder({ ...input, projectRoot: (await status(home)).projectRoot }),
     logs: () => openLogs(home),
-    diagnostics: async () => ({ schema: 1, platform: process.platform, architecture: process.arch, node: process.version,
-      upstream: baseline, runtime: await status(home), desktop: await readJson(join(home, 'desktop-status.json'), null).catch(() => null) }),
+    diagnostics: async () => {
+      const safe = async operation => operation().catch(error => ({ error: error.message }));
+      return { schema: 1, platform: process.platform, architecture: process.arch, node: process.version,
+        upstream: baseline,
+        runtime: await safe(() => status(home)),
+        jobs: Object.fromEntries(await Promise.all(['runtime', 'desktop', 'installer'].map(async component => [component, await safe(() => jobStatus(home, component))]))),
+        install: await readJson(join(home, 'install.json'), null).catch(error => ({ error: error.message })),
+        attempt: await readJson(join(home, 'install-attempt.json'), null).catch(error => ({ error: error.message })),
+        desktop: await readJson(join(home, 'desktop-status.json'), null).catch(error => ({ error: error.message })) };
+    },
     'update-check': async ({ signal }) => { const release = await discoverStable({ signal }); return { ...release, available: semver.gt(release.version, baseline.version) }; },
     'update-prepare': async ({ onProgress }) => {
       const personal = await readPersonalConfig(home);
       const result = await prepareStable({ root: personal.sourceRoot ?? packageRoot, onProgress });
-      await atomicJson(join(home, 'upgrade-review.json'), result); return result;
+      const review = { schema: 1, status: 'tested-awaiting-review', candidate: result.candidate, candidateHead: result.candidateHead,
+        preparedAt: new Date().toISOString() };
+      await atomicJson(join(home, 'upgrade-review.json'), review);
+      return { ...review, version: result.version, branch: result.branch, tests: result.tests };
     },
     'update-apply': async () => {
       await requireIdle(home);
       const candidate = await readJson(join(home, 'upgrade-review.json'));
       if (candidate?.status !== 'tested-awaiting-review' || !candidate.candidate) throw new Error('没有经过完整验证的升级候选');
-      return (await import('../install.mjs')).requestInstall(candidate.candidate, home);
+      const approved = { ...candidate, approvedCandidateHead: candidate.candidateHead, approvedAt: new Date().toISOString() };
+      await atomicJson(join(home, 'upgrade-review.json'), approved);
+      try {
+        const result = await (await import('../install.mjs')).requestInstallAndWait(candidate.candidate, home,
+          { expectedCandidateHead: candidate.candidateHead });
+        await atomicJson(join(home, 'upgrade-review.json'), { ...approved, status: 'applied', appliedAt: new Date().toISOString(),
+          requestId: result.requestId });
+        return result;
+      } catch (error) {
+        await atomicJson(join(home, 'upgrade-review.json'), { ...approved, lastInstallError: error.message, lastInstallAt: new Date().toISOString() }).catch(() => {});
+        throw error;
+      }
     },
     exit: async () => {
+      await requireIdle(home);
       await atomicJson(join(home, 'intent.json'), { paused: true });
       // Let the desktop owner exit itself after the core stop has settled.
-      await jobAction(home, 'runtime', 'stop');
+      await stopReady(home);
     },
   };
 }
@@ -121,7 +177,8 @@ export async function startDesktop(home = stateHome(), { nativePath, onEvidence 
     const child = spawn(executable, [], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'],
       env: { ...process.env, PERSONAL_DEVSPACE_TRAY_INSTANCE_ID: createHash('sha256').update(process.platform === 'win32' ? resolve(home).toLowerCase() : resolve(home)).digest('hex') } });
     tray = child;
-    child.stdin.on('error', () => {}); child.stderr.on('data', () => {});
+    child.stdin.on('error', () => {});
+    child.stderr.on('data', chunk => process.stderr.write(`[personal-tray] ${String(chunk).slice(0, 4096)}`));
     const lines = createInterface({ input: child.stdout });
     const send = state => { if (!child.stdin.destroyed) child.stdin.write(`${JSON.stringify(trayState(state))}\n`); };
     unsubscribe = controller.subscribe(send);

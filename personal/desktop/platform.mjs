@@ -1,17 +1,18 @@
 // Desktop helpers adapted from the fixed Team 0.2.6 snapshot. All persistent
 // services are owned by Task Scheduler / launchd / systemd, never an MCP command.
 import { execFile } from 'node:child_process';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { stateHome, readJson, atomicJson, secureStateDirectory } from '../state.mjs';
 
 const exec = promisify(execFile);
-const components = ['runtime', 'desktop'];
+export const serviceComponents = ['runtime', 'desktop'];
+const components = serviceComponents;
 const managedComponents = [...components, 'installer'];
 const xml = value => String(value).replace(/[<>&"']/g, ch => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[ch]);
 const quoted = value => `"${String(value).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
@@ -96,7 +97,7 @@ finally { $picker.Dispose(); $owner.Dispose() }
 }
 export async function installRecord(home = stateHome()) {
   const value = await readJson(join(home, 'install.json'));
-  if (value?.schema !== 1 || value.owner !== 'personal-devspace' || !value.packageRoot || !value.node) throw new Error('Invalid Personal installation ownership');
+  if (value?.schema !== 1 || value.owner !== 'personal-devspace' || !value.packageRoot) throw new Error('Invalid Personal installation ownership');
   await access(join(value.packageRoot, 'personal', 'bin.mjs'));
   return value;
 }
@@ -122,6 +123,13 @@ async function windowsTask(home, component) {
   if (result.trim() === 'PERSONAL_TASK_MISSING') return null;
   if (!result.includes(`PersonalDevSpace:${ownerId(home)}:${component}`)) throw new Error('Task name belongs to an unknown owner');
   return result;
+}
+async function createWindowsTask(home, component, contents) {
+  const path = join(tmpdir(), `personal-devspace-${ownerId(home)}-${component}-${randomUUID()}.xml`);
+  try {
+    await writeFile(path, contents.startsWith('\ufeff') ? contents : `\ufeff${contents}`, 'utf16le');
+    await native(system('schtasks.exe'), ['/Create', '/TN', jobName(home, component), '/XML', path, '/F']);
+  } finally { await rm(path, { force: true }).catch(() => {}); }
 }
 export async function registerDesktopEntries(home, root) {
   if (process.platform !== 'win32') return;
@@ -149,42 +157,78 @@ foreach($folder in $folders) {
 export async function registerJobs(home, root, selected = components, { record = true } = {}) {
   await secureStateDirectory(home);
   await access(join(root, 'dist', 'server.js'));
-  await mkdir(join(home, 'logs'), { recursive: true }); await mkdir(join(home, 'startup'), { recursive: true });
+  await mkdir(join(home, 'logs'), { recursive: true });
   const codexCommand = selected.includes('runtime') ? await discoverCodexCommand() : undefined;
   if (process.platform === 'win32') {
     await access(join(root, 'personal', 'bin', 'personal-launcher.exe'));
     const { stdout } = await native(system('whoami.exe'), ['/user', '/fo', 'csv', '/nh']);
     const sid = /S-1-5-[0-9-]+/.exec(stdout)?.[0];
-    for (const component of selected) {
-      await windowsTask(home, component);
-      const path = join(home, 'startup', `${component}.xml`);
-      await writeFile(path, `\ufeff${taskXml({ home, component, root, node: process.execPath, sid, codexCommand })}`, 'utf16le');
-      await native(system('schtasks.exe'), ['/Create', '/TN', jobName(home, component), '/XML', path, '/F']);
+    const previous = new Map();
+    for (const component of selected) previous.set(component, await windowsTask(home, component));
+    const changed = [];
+    try {
+      for (const component of selected) {
+        changed.push(component);
+        await createWindowsTask(home, component, taskXml({ home, component, root, node: process.execPath, sid, codexCommand }));
+      }
+    } catch (error) {
+      const rollback = [];
+      for (const component of changed.reverse()) {
+        const before = previous.get(component);
+        rollback.push(before
+          ? createWindowsTask(home, component, before)
+          : native(system('schtasks.exe'), ['/Delete', '/TN', jobName(home, component), '/F']).catch(() => {}));
+      }
+      await Promise.allSettled(rollback);
+      throw error;
     }
   } else if (process.platform === 'darwin') {
     const directory = join(homedir(), 'Library', 'LaunchAgents'); await mkdir(directory, { recursive: true });
+    const plans = [];
     for (const component of selected) {
       const label = jobName(home, component); const path = join(directory, `${label}.plist`);
-      const existing = await readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
-      if (existing && !existing.includes(`PersonalDevSpace:${ownerId(home)}`)) throw new Error('Unknown LaunchAgent owner');
+      const previous = await readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+      if (previous && !previous.includes(`PersonalDevSpace:${ownerId(home)}`)) throw new Error('Unknown LaunchAgent owner');
       const args = [process.execPath, join(root, 'personal', 'bin.mjs'), component];
       const environment = managedEnvironment(home, component, codexCommand).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('');
-      await writeFile(path, `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><!-- PersonalDevSpace:${ownerId(home)} --><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join('')}</array><key>WorkingDirectory</key><string>${xml(root)}</string><key>EnvironmentVariables</key><dict>${environment}</dict><key>RunAtLoad</key><${component === 'installer' ? 'false' : 'true'}/><key>ProcessType</key><string>Interactive</string><key>StandardOutPath</key><string>${xml(join(home, 'logs', `${component}.log`))}</string><key>StandardErrorPath</key><string>${xml(join(home, 'logs', `${component}.error.log`))}</string></dict></plist>\n`, { mode: 0o600 });
+      const contents = `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><!-- PersonalDevSpace:${ownerId(home)} --><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join('')}</array><key>WorkingDirectory</key><string>${xml(root)}</string><key>EnvironmentVariables</key><dict>${environment}</dict><key>RunAtLoad</key><${component === 'installer' ? 'false' : 'true'}/><key>ProcessType</key><string>Interactive</string><key>StandardOutPath</key><string>${xml(join(home, 'logs', `${component}.log`))}</string><key>StandardErrorPath</key><string>${xml(join(home, 'logs', `${component}.error.log`))}</string></dict></plist>\n`;
+      plans.push({ path, previous, contents });
+    }
+    try {
+      for (const plan of plans) await writeFile(plan.path, plan.contents, { mode: 0o600 });
+    } catch (error) {
+      await Promise.allSettled(plans.map(plan => plan.previous ? writeFile(plan.path, plan.previous, { mode: 0o600 }) : rm(plan.path, { force: true })));
+      throw error;
     }
   } else {
     const directory = join(homedir(), '.config', 'systemd', 'user'); await mkdir(directory, { recursive: true });
+    const plans = [];
     for (const component of selected) {
       const path = join(directory, `${jobName(home, component)}.service`);
-      const existing = await readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
-      if (existing && !existing.includes(`PersonalDevSpace:${ownerId(home)}`)) throw new Error('Unknown systemd unit owner');
+      const previous = await readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
+      if (previous && !previous.includes(`PersonalDevSpace:${ownerId(home)}`)) throw new Error('Unknown systemd unit owner');
       const q = value => `"${String(value).replace(/([\\"])/g, '\\$1').replace(/%/g, '%%')}"`;
       const environment = managedEnvironment(home, component, codexCommand).map(([key, value]) => `Environment=${q(`${key}=${value}`)}\n`).join('');
-      await writeFile(path, `[Unit]\nDescription=PersonalDevSpace:${ownerId(home)} ${component}\n[Service]\nType=simple\nWorkingDirectory=${q(root)}\n${environment}ExecStart=${q(process.execPath)} ${q(join(root, 'personal/bin.mjs'))} ${component}\nKillMode=control-group\n[Install]\nWantedBy=default.target\n`, { mode: 0o600 });
+      const contents = `[Unit]\nDescription=PersonalDevSpace:${ownerId(home)} ${component}\n[Service]\nType=simple\nWorkingDirectory=${q(root)}\n${environment}ExecStart=${q(process.execPath)} ${q(join(root, 'personal/bin.mjs'))} ${component}\nStandardOutput=${q('append:' + join(home, 'logs', `${component}.log`))}\nStandardError=${q('append:' + join(home, 'logs', `${component}.error.log`))}\nKillMode=control-group\n[Install]\nWantedBy=default.target\n`;
+      const unit = `${jobName(home, component)}.service`;
+      const enabled = previous ? await native('systemctl', ['--user', 'is-enabled', unit]).then(() => true, error => {
+        if ([1, 4].includes(error.code)) return false; throw error;
+      }) : false;
+      plans.push({ component, unit, path, previous, contents, enabled });
     }
-    await native('systemctl', ['--user', 'daemon-reload']);
-    for (const component of selected.filter(value => value !== 'installer')) await native('systemctl', ['--user', 'enable', `${jobName(home, component)}.service`]);
+    try {
+      for (const plan of plans) await writeFile(plan.path, plan.contents, { mode: 0o600 });
+      await native('systemctl', ['--user', 'daemon-reload']);
+      const enable = plans.filter(plan => plan.component !== 'installer').map(plan => plan.unit);
+      if (enable.length) await native('systemctl', ['--user', 'enable', ...enable]);
+    } catch (error) {
+      await Promise.allSettled(plans.map(plan => plan.previous ? writeFile(plan.path, plan.previous, { mode: 0o600 }) : rm(plan.path, { force: true })));
+      await native('systemctl', ['--user', 'daemon-reload']).catch(() => {});
+      await Promise.allSettled(plans.map(plan => native('systemctl', ['--user', plan.enabled ? 'enable' : 'disable', plan.unit])));
+      throw error;
+    }
   }
-  if (record) await atomicJson(join(home, 'install.json'), { schema: 1, owner: 'personal-devspace', packageRoot: resolve(root), node: process.execPath });
+  if (record) await atomicJson(join(home, 'install.json'), { schema: 1, owner: 'personal-devspace', packageRoot: resolve(root) });
 }
 export async function jobAction(home, component, action) {
   if (!managedComponents.includes(component) || !['start', 'stop', 'remove'].includes(action)) throw new Error('Invalid job action');
@@ -221,18 +265,33 @@ export async function jobAction(home, component, action) {
   if (action === 'remove') { await native('systemctl', ['--user', 'disable', unit]); await rm(path); await native('systemctl', ['--user', 'daemon-reload']); }
 }
 
-export async function jobRunning(home, component) {
+export async function jobStatus(home, component) {
   if (!managedComponents.includes(component)) throw new Error('Invalid job component');
   if (process.platform === 'win32') {
-    if (!await windowsTask(home, component)) return false;
+    if (!await windowsTask(home, component)) return { exists: false, running: false, state: 'missing' };
     const state = await runWindowsDesktop('(Get-ScheduledTask -TaskName $env:PERSONAL_TASK).State.ToString()', { env: { PERSONAL_TASK: jobName(home, component) } });
-    return /Running|Queued/i.test(state);
+    const value = state.trim();
+    return { exists: true, running: /Running|Queued/i.test(value), state: value || 'unknown' };
   }
   if (process.platform === 'darwin') {
-    try { await access(join(homedir(), 'Library', 'LaunchAgents', `${jobName(home, component)}.plist`)); }
-    catch (error) { if (error.code === 'ENOENT') return false; throw error; }
-    return native('/bin/launchctl', ['print', `gui/${process.getuid()}/${jobName(home, component)}`]).then(result => /state = running/.test(result.stdout), error => { if ([3, 113].includes(error.code)) return false; throw error; });
+    const path = join(homedir(), 'Library', 'LaunchAgents', `${jobName(home, component)}.plist`);
+    try { await access(path); } catch (error) {
+      if (error.code === 'ENOENT') return { exists: false, running: false, state: 'missing' };
+      throw error;
+    }
+    return native('/bin/launchctl', ['print', `gui/${process.getuid()}/${jobName(home, component)}`])
+      .then(result => ({ exists: true, running: /state = running/.test(result.stdout), state: /state = ([^\n]+)/.exec(result.stdout)?.[1]?.trim() ?? 'loaded' }),
+        error => { if ([3, 113].includes(error.code)) return { exists: true, running: false, state: 'unloaded' }; throw error; });
   }
-  return native('systemctl', ['--user', 'is-active', `${jobName(home, component)}.service`]).then(result => result.stdout.trim() === 'active', error => { if ([3, 4].includes(error.code)) return false; throw error; });
+  const unit = `${jobName(home, component)}.service`;
+  const path = join(homedir(), '.config', 'systemd', 'user', unit);
+  try { await access(path); } catch (error) {
+    if (error.code === 'ENOENT') return { exists: false, running: false, state: 'missing' };
+    throw error;
+  }
+  return native('systemctl', ['--user', 'is-active', unit])
+    .then(result => ({ exists: true, running: result.stdout.trim() === 'active', state: result.stdout.trim() || 'unknown' }),
+      error => { if ([3, 4].includes(error.code)) return { exists: true, running: false, state: 'inactive' }; throw error; });
 }
+export const jobRunning = async (home, component) => (await jobStatus(home, component)).running;
 export const installerRunning = home => jobRunning(home, 'installer');

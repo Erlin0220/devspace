@@ -42,7 +42,7 @@ try {
     // Never use this fixture's home, keys or scheduled tasks as a real installation.
     await atomicJson(join(home, 'control-capability.json'), { schema: 1, token: 'PersonalDevSpaceFixtureCapabilityForTests01' });
     await registerJobs(home, root, ['runtime', 'desktop'], { record: false });
-    await atomicJson(join(home, 'install.json'), { schema: 1, owner: 'personal-devspace', packageRoot: root, node: process.execPath });
+    await atomicJson(join(home, 'install.json'), { schema: 1, owner: 'personal-devspace', packageRoot: root });
     await jobAction(home, 'runtime', 'start'); await jobAction(home, 'desktop', 'start');
     for (let i = 0; i < 100; i++) {
       const ready = await readJson(join(home, 'control-capability.json'), null);

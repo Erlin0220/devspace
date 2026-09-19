@@ -54,7 +54,7 @@ import { openAiConversationScopeId } from "./request-meta.js";
 import { shutdownHttpServer } from "./server-shutdown.js";
 import { formatPathForPrompt } from "./skills.js";
 import { createWorkspaceStore } from "./workspace-store.js";
-import { formatAgentsPath, WorkspaceRegistry, type Workspace } from "./workspaces.js";
+import { formatAgentsPath, WorkspaceRegistry } from "./workspaces.js";
 import {
   getLocalAgentProviderAvailabilitySnapshot,
 } from "./local-agent-availability.js";
@@ -195,6 +195,8 @@ interface ToolLogFields {
 }
 
 function serverInstructions(config: ServerConfig): string {
+  const executionRoutingInstruction =
+    "When the user asks you to actually inspect, modify, fix, run, test, build, install, commit, push, or otherwise operate on a local project, use DevSpace tools to perform the work instead of replying with manual steps or command snippets. If the user asks only for an explanation, comparison, or a plan without execution, do not force a tool call. ";
   const artifactInstruction = config.artifactsEnabled && isArtifactDownloadSupportedPlatform()
     ? " When the user supplies or generates a file that is not present on the DevSpace host, use download_artifact with its native file value, the existing workspace ID, and a suitable relative destination path chosen from the user's request and project structure. The tool refuses to overwrite an existing destination and returns the normalized workspace-relative path. Use normal workspace tools when explicit inspection, replacement, movement, renaming, or deletion is needed. Do not recreate binary files with write/edit calls or place signed URLs, native file objects, base64 content, or invented host paths in shell commands or logs."
     : "";
@@ -204,7 +206,7 @@ function serverInstructions(config: ServerConfig): string {
       : "";
 
   if (config.toolMode === "codex") {
-    return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
+    return `Use DevSpace for coding work. ${executionRoutingInstruction}Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -217,7 +219,7 @@ function serverInstructions(config: ServerConfig): string {
 
   const agentsMd = `Follow instructions returned by ${toolNames.openWorkspace}. Before working under a path listed in availableAgentsFiles, use ${toolNames.read} to inspect that instruction file and follow it. `;
 
-  return `Use DevSpace for coding work. Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${artifactInstruction}${showChangesInstruction}`;
+  return `Use DevSpace for coding work. ${executionRoutingInstruction}Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. ${agentsMd}${skills}${inspection}Prefer ${toolNames.edit} for targeted modifications, ${toolNames.write} only for new files or complete rewrites, and ${toolNames.shell} for tests, builds, git inspection, package scripts, and commands that are better executed by the shell. Do not create or modify files with ${toolNames.shell}; avoid shell redirection, heredocs, tee, sed -i, perl -i, node/python/ruby scripts, or any command whose purpose is to write project files.${artifactInstruction}${showChangesInstruction}`;
 }
 
 function formatVisibleAgent(agent: {
@@ -725,7 +727,6 @@ export function createMcpServer(
   processSessions: ProcessSessionManager,
   resolveLocalAgentProviders: () => LocalAgentProviderStatus[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
-  onWorkspaceOpened?: (workspace: Workspace) => Promise<void>,
 ): McpServer {
   const server = new McpServer(
     {
@@ -733,7 +734,7 @@ export function createMcpServer(
       title: "DevSpace",
       version: "0.1.0",
       description:
-        "Coding tools for project workspaces. Open each project or worktree once, then reuse its workspaceId.",
+        "Local project execution tools for inspecting, modifying, fixing, running, testing, building, and operating coding workspaces. Use DevSpace when the user asks ChatGPT to actually work on a local project; open each project or worktree once, then reuse its workspaceId.",
     },
     {
       instructions: serverInstructions(config),
@@ -833,7 +834,6 @@ export function createMcpServer(
         { path, mode, baseRef },
         { conversationScopeId: openAiConversationScopeId(_meta) },
       );
-      await onWorkspaceOpened?.(workspace);
       if (config.widgets === "changes") {
         await reviewCheckpoints.initializeWorkspace({
           workspaceId: workspace.id,
@@ -1690,7 +1690,6 @@ export interface CreateServerOptions {
   // Personal entrypoint seams. Upstream CLI/config and default behavior stay unchanged.
   verifyAccessToken?: (token: string) => ReturnType<SingleUserOAuthProvider["verifyAccessToken"]> | undefined;
   registerTools?: (server: McpServer, workspaces: WorkspaceRegistry) => void;
-  onWorkspaceOpened?: (workspace: Workspace) => Promise<void>;
   dispose?: () => Promise<void>;
   createEventStore?: () => import("@modelcontextprotocol/sdk/server/streamableHttp.js").EventStore & { close(): void };
 }
@@ -1896,7 +1895,6 @@ export function createServer(
           processSessions,
           resolveLocalAgentProviders,
           incomingArtifactAdapters,
-          options.onWorkspaceOpened,
         );
         options.registerTools?.(server, workspaces);
         await server.connect(transport);

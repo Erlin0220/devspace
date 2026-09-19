@@ -53,7 +53,6 @@ function view(name) {
 }
 async function action(name, input = {}) {
   if (requestPending) return;
-  if (['suspend', 'restart', 'project-root'].includes(name) && !confirm('该操作可能中断正在执行的任务。确认当前任务已结束后继续。')) return;
   if (name === 'update-apply' && !confirm('确认已审查候选分支、range-diff 和测试报告。安装会重启个人 Runtime，保留认证、目录及暂停状态；是否继续？')) return;
   requestPending = true; requestAction = name; if (current) render(current); if (name !== 'check') feedback('正在处理…');
   try { const result = await api('/api/action', { action: name, ...input });
