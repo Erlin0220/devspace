@@ -7,6 +7,11 @@ import { PersonalSubagents } from "./subagents.js";
 
 export interface PersonalExtensionsConfig { apiToken?: string; codegraph?: CodeGraphOptions }
 
+const PERSONAL_MCP_SESSION_RETENTION = {
+  idleTimeoutMs: 60 * 60_000,
+  cleanupIntervalMs: 5 * 60_000,
+} as const;
+
 export function personalExtensions(config: ServerConfig, personal: PersonalExtensionsConfig): CreateServerOptions {
   if (personal.apiToken !== undefined && !/^[\x21-\x7e]{32,4096}$/.test(personal.apiToken)) {
     throw new Error("Personal API Token must contain 32..4096 printable non-space characters");
@@ -27,6 +32,9 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
       codegraph.register(server, workspaces);
       subagents.register(server, workspaces);
     },
+    // ChatGPT may abandon transports without closing them. Bound Personal retention
+    // until upstream ships a hard session-capacity policy; upstream defaults stay unchanged.
+    mcpSessionRetention: PERSONAL_MCP_SESSION_RETENTION,
     createEventStore: () => replay.createStore(),
     dispose: async () => { replay.close(); await codegraph.close(); },
   };

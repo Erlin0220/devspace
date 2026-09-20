@@ -11,7 +11,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import { Result } from 'better-result';
 import { loadConfig } from '../../src/config.js';
-import { createServer } from '../../src/server.js';
+import { createServer, type CreateServerOptions } from '../../src/server.js';
 import { personalExtensions } from '../../src/personal/index.js';
 import { ReplayPool } from '../../src/personal/replay.js';
 import { PersonalCodeGraph, type CodeGraphOptions } from '../../src/personal/codegraph.js';
@@ -20,14 +20,16 @@ import { WorkspaceRegistry } from '../../src/workspaces.js';
 
 const TOKEN = 'test-only-personal-token-not-a-real-secret';
 const execFileAsync = promisify(execFile);
-async function fixture(t: TestContext, codegraph: boolean | CodeGraphOptions = false) {
+async function fixture(t: TestContext, codegraph: boolean | CodeGraphOptions = false,
+  mcpSessionRetention?: CreateServerOptions['mcpSessionRetention']) {
   const root = await mkdtemp(join(tmpdir(), 'personal-core-'));
   const project = join(root, 'project'); await mkdir(project);
   const config = loadConfig({ DEVSPACE_CONFIG_DIR: join(root, 'config'), DEVSPACE_ALLOWED_ROOTS: project,
     DEVSPACE_STATE_DIR: join(root, 'state'), DEVSPACE_WORKTREE_ROOT: join(root, 'worktrees'), DEVSPACE_AGENT_DIR: join(root, 'agents'),
     DEVSPACE_OAUTH_OWNER_TOKEN: 'separate-test-only-oauth-owner-token', DEVSPACE_TOOL_MODE: 'codex', DEVSPACE_WIDGETS: 'off',
     DEVSPACE_SUBAGENTS: 'false', DEVSPACE_LOG_LEVEL: 'error', HOST: '127.0.0.1', PORT: '1', DEVSPACE_PUBLIC_BASE_URL: 'http://127.0.0.1:1' });
-  const running = createServer(config, personalExtensions(config, { apiToken: TOKEN, codegraph: { enabled: Boolean(codegraph), command: join(root, 'missing-codegraph'), args: ['serve', '--mcp'], toolTimeoutMs: 500, startupTimeoutMs: 500, ...(typeof codegraph === 'object' ? codegraph : {}) } }));
+  const personalOptions = personalExtensions(config, { apiToken: TOKEN, codegraph: { enabled: Boolean(codegraph), command: join(root, 'missing-codegraph'), args: ['serve', '--mcp'], toolTimeoutMs: 500, startupTimeoutMs: 500, ...(typeof codegraph === 'object' ? codegraph : {}) } });
+  const running = createServer(config, { ...personalOptions, ...(mcpSessionRetention ? { mcpSessionRetention } : {}) });
   const http = running.app.listen(0, '127.0.0.1');
   await new Promise<void>((resolve, reject) => { http.once('listening', resolve); http.once('error', reject); });
   const endpoint = new URL(`http://127.0.0.1:${(http.address() as { port: number }).port}/mcp`);
@@ -40,8 +42,28 @@ async function fixture(t: TestContext, codegraph: boolean | CodeGraphOptions = f
       reconnectionOptions: { initialReconnectionDelay: 20, maxReconnectionDelay: 100, reconnectionDelayGrowFactor: 1.2, maxRetries: 5 } });
     await client.connect(transport); return client;
   }
-  return { root, project, config, endpoint, connect };
+  return { root, project, config, endpoint, connect, personalOptions };
 }
+
+test('Personal bounds abandoned MCP session retention without changing upstream defaults', async t => {
+  const f = await fixture(t, false, { idleTimeoutMs: 20, cleanupIntervalMs: 10 });
+  assert.deepEqual(f.personalOptions.mcpSessionRetention, { idleTimeoutMs: 60 * 60_000, cleanupIntervalMs: 5 * 60_000 });
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${TOKEN}`,
+    'Content-Type': 'application/json',
+    Accept: 'application/json, text/event-stream',
+  };
+  const init = await fetch(f.endpoint, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize',
+    params: { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'retention-regression', version: '1' } } }) });
+  assert.equal(init.status, 200);
+  const sessionId = init.headers.get('mcp-session-id');
+  assert.ok(sessionId);
+  await init.text();
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const stale = await fetch(f.endpoint, { method: 'POST', headers: { ...headers, 'mcp-session-id': sessionId,
+    'mcp-protocol-version': '2025-11-25' }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'ping' }) });
+  assert.equal(stale.status, 404);
+});
 
 test('API token stays separate from OAuth; invalid credentials are rejected', async t => {
   const f = await fixture(t); const client = await f.connect();
@@ -260,4 +282,18 @@ test('CodeGraph isolates configuration and initializes once for concurrent calle
   assert.equal(await readFile(join(root, '.codegraph/init-count'), 'utf8'), 'x');
   const results = await Promise.all([graph.explore(root, 'alpha'), graph.explore(root, 'beta')]);
   for (const result of results) { assert.equal(result.isError, false); assert.match(result.structuredContent.result, /fixture/); }
+});
+
+test('CodeGraph releases its worker after the idle timeout and reconnects on demand', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'personal-codegraph-idle-')); t.after(() => rm(root, { recursive: true, force: true }));
+  const script = resolve('personal/tests/codegraph-fixture.mjs');
+  const graph = new PersonalCodeGraph({ enabled: true, command: process.execPath, args: [script, 'serve', '--mcp'], initArgs: [script, 'init'],
+    toolTimeoutMs: 5000, startupTimeoutMs: 5000, idleTimeoutMs: 50 });
+  t.after(() => graph.close());
+  const first = await graph.explore(root, 'first');
+  const firstPid = JSON.parse(first.structuredContent.result).pid;
+  await new Promise(resolve => setTimeout(resolve, 150));
+  const second = await graph.explore(root, 'second');
+  const secondPid = JSON.parse(second.structuredContent.result).pid;
+  assert.notEqual(firstPid, secondPid);
 });

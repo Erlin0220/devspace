@@ -9,10 +9,13 @@ export async function readPersonalConfig(home = stateHome()) {
   if (value.projectRoot !== undefined && (typeof value.projectRoot !== 'string' || !isAbsolute(value.projectRoot))) throw new Error('Invalid Personal project directory');
   if (value.sourceRoot !== undefined && (typeof value.sourceRoot !== 'string' || !isAbsolute(value.sourceRoot))) throw new Error('Invalid Personal source directory');
   if (value.codegraph !== undefined && (typeof value.codegraph !== 'object' || Array.isArray(value.codegraph)
-      || (value.codegraph.enabled !== undefined && typeof value.codegraph.enabled !== 'boolean'))) throw new Error('Invalid Personal CodeGraph configuration');
+      || (value.codegraph.enabled !== undefined && typeof value.codegraph.enabled !== 'boolean')
+      || (value.codegraph.idleTimeoutMs !== undefined && (!Number.isInteger(value.codegraph.idleTimeoutMs)
+        || value.codegraph.idleTimeoutMs < 0 || value.codegraph.idleTimeoutMs > 600_000)))) throw new Error('Invalid Personal CodeGraph configuration');
   const intent = await readJson(join(home, 'intent.json'), { paused: false });
   if (typeof intent?.paused !== 'boolean') throw new Error('Invalid Personal pause intent');
-  return { ...value, codegraph: { enabled: value.codegraph?.enabled === true },
+  return { ...value, codegraph: { enabled: value.codegraph?.enabled === true,
+      ...(value.codegraph?.idleTimeoutMs === undefined ? {} : { idleTimeoutMs: value.codegraph.idleTimeoutMs }) },
     runtimeConfigDir: value.runtimeConfigDir ?? join(homedir(), '.devspace'), paused: intent.paused };
 }
 export async function readPersonalAuth(home = stateHome(), env = process.env) {

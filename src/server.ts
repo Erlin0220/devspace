@@ -196,7 +196,7 @@ interface ToolLogFields {
 
 function serverInstructions(config: ServerConfig): string {
   const executionRoutingInstruction =
-    "When the user asks you to actually inspect, modify, fix, run, test, build, install, commit, push, or otherwise operate on a local project, use DevSpace tools to perform the work instead of replying with manual steps or command snippets. If the user asks only for an explanation, comparison, or a plan without execution, do not force a tool call. ";
+    "ALWAYS use DevSpace for software-development work involving the user's real code, repositories, project files, local runtime, build/test state, Git state, implementation questions, debugging, or continued development context, even when the user does not explicitly name DevSpace. This includes inspect, explain, analyze, modify, fix, run, test, build, install, commit, push, review, or continue work on a local project. Terse follow-ups such as '看看', '分析一下', '怎么回事', '继续', '修一下', '跑一下', or '帮我做' inherit the active development context and must stay in DevSpace. Use DevSpace before giving a prose answer whenever local project evidence can inform the response. Only skip DevSpace when the request is clearly unrelated to software development or the user's local development environment. ";
   const artifactInstruction = config.artifactsEnabled && isArtifactDownloadSupportedPlatform()
     ? " When the user supplies or generates a file that is not present on the DevSpace host, use download_artifact with its native file value, the existing workspace ID, and a suitable relative destination path chosen from the user's request and project structure. The tool refuses to overwrite an existing destination and returns the normalized workspace-relative path. Use normal workspace tools when explicit inspection, replacement, movement, renaming, or deletion is needed. Do not recreate binary files with write/edit calls or place signed URLs, native file objects, base64 content, or invented host paths in shell commands or logs."
     : "";
@@ -734,7 +734,7 @@ export function createMcpServer(
       title: "DevSpace",
       version: "0.1.0",
       description:
-        "Local project execution tools for inspecting, modifying, fixing, running, testing, building, and operating coding workspaces. Use DevSpace when the user asks ChatGPT to actually work on a local project; open each project or worktree once, then reuse its workspaceId.",
+        "Default local development workspace for ChatGPT. ALWAYS use DevSpace for software-development work involving the user's real code, repositories, project files, local runtime, builds, tests, Git state, debugging, implementation analysis, or continued coding context, even when the user does not explicitly name DevSpace. Use it before answering when local project evidence can inform the response; skip only requests clearly unrelated to software development.",
     },
     {
       instructions: serverInstructions(config),
@@ -778,7 +778,7 @@ export function createMcpServer(
     {
       title: "Open workspace",
       description:
-        "Start work in a project directory or isolated worktree when no usable workspaceId exists for it. During continued work, reuse the existing workspaceId instead of calling this tool again. By default this uses the actual checkout; set mode=\"worktree\" for isolated or parallel work.",
+        "Default entry point for software-development work on the user's real local project. Use this whenever a coding, repository, debugging, implementation, build/test, Git, or continued-development request needs local project context and no usable workspaceId exists, even if the user did not explicitly ask for DevSpace. During continued work, reuse the existing workspaceId instead of calling this tool again. By default this uses the actual checkout; set mode=\"worktree\" for isolated or parallel work.",
       inputSchema: {
         path: z
           .string()
@@ -1692,6 +1692,7 @@ export interface CreateServerOptions {
   registerTools?: (server: McpServer, workspaces: WorkspaceRegistry) => void;
   dispose?: () => Promise<void>;
   createEventStore?: () => import("@modelcontextprotocol/sdk/server/streamableHttp.js").EventStore & { close(): void };
+  mcpSessionRetention?: { idleTimeoutMs: number; cleanupIntervalMs: number };
 }
 
 export function createServer(
@@ -1708,6 +1709,14 @@ export function createServer(
     ...(allowedHosts ? { allowedHosts } : {}),
   });
   const transports = new McpSessionRegistry<Transport>();
+  const mcpSessionRetention = options.mcpSessionRetention ?? {
+    idleTimeoutMs: MCP_SESSION_IDLE_TIMEOUT_MS,
+    cleanupIntervalMs: MCP_SESSION_CLEANUP_INTERVAL_MS,
+  };
+  if (!Number.isFinite(mcpSessionRetention.idleTimeoutMs) || mcpSessionRetention.idleTimeoutMs <= 0
+    || !Number.isFinite(mcpSessionRetention.cleanupIntervalMs) || mcpSessionRetention.cleanupIntervalMs <= 0) {
+    throw new Error("MCP session retention durations must be positive finite milliseconds");
+  }
   const mcpUrl = new URL("/mcp", config.publicBaseUrl);
   const resourceServerUrl = resourceUrlFromServerUrl(mcpUrl);
   const oauthProvider = new SingleUserOAuthProvider(config.oauth, mcpUrl, config.stateDir);
@@ -1758,9 +1767,9 @@ export function createServer(
 
   const sessionCleanupTimer = setInterval(() => {
     void transports
-      .closeIdle(MCP_SESSION_IDLE_TIMEOUT_MS)
+      .closeIdle(mcpSessionRetention.idleTimeoutMs)
       .then((results) => logSessionCloseResults("idle_timeout", results));
-  }, MCP_SESSION_CLEANUP_INTERVAL_MS);
+  }, mcpSessionRetention.cleanupIntervalMs);
   sessionCleanupTimer.unref();
 
   if (config.logging.trustProxy) {

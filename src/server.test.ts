@@ -19,18 +19,20 @@ import { WorkspaceRegistry } from "./workspaces.js";
 
 const execFileAsync = promisify(execFile);
 
-test("server metadata routes real project execution to DevSpace without forcing conceptual requests", async (t) => {
+test("server metadata makes DevSpace the default for local software-development work", async (t) => {
   const context = await fixture(t);
   const instructions = context.client.getInstructions() ?? "";
   const serverVersion = context.client.getServerVersion();
 
   assert.match(
     instructions,
-    /actually inspect, modify, fix, run, test, build, install, commit, push/i,
+    /ALWAYS use DevSpace for software-development work/i,
   );
-  assert.match(instructions, /perform the work instead of replying with manual steps or command snippets/i);
-  assert.match(instructions, /asks only for an explanation, comparison, or a plan without execution/i);
-  assert.match(serverVersion?.description ?? "", /actually work on a local project/i);
+  assert.match(instructions, /inspect, explain, analyze, modify, fix, run, test, build, install, commit, push, review, or continue/i);
+  assert.match(instructions, /'看看'.*'继续'.*'修一下'.*'跑一下'.*'帮我做'/i);
+  assert.match(instructions, /Only skip DevSpace when the request is clearly unrelated to software development/i);
+  assert.match(serverVersion?.description ?? "", /Default local development workspace for ChatGPT/i);
+  assert.match(serverVersion?.description ?? "", /ALWAYS use DevSpace for software-development work/i);
 });
 
 test("open_workspace keeps lifecycle flags out of model output and preserves complete card metadata", async (t) => {
@@ -43,6 +45,8 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
 
   const tools = await context.client.listTools();
   const openTool = tools.tools.find((tool) => tool.name === "open_workspace");
+  assert.match(openTool?.description ?? "", /Default entry point for software-development work/i);
+  assert.match(openTool?.description ?? "", /even if the user did not explicitly ask for DevSpace/i);
   const outputProperties = (openTool?.outputSchema as { properties?: Record<string, unknown> } | undefined)?.properties;
   assert.equal(outputProperties && "workspaceReused" in outputProperties, false);
   assert.equal(outputProperties && "includeBootstrapContext" in outputProperties, false);

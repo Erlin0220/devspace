@@ -9,6 +9,6 @@ if (process.argv[2] === 'init') {
 } else {
   const server = new McpServer({ name: 'codegraph-fixture', version: '1' });
   server.registerTool('codegraph_explore', { inputSchema: { query: z.string(), projectPath: z.string(), maxFiles: z.number().optional() } },
-    async input => ({ content: [{ type: 'text', text: JSON.stringify({ fixture: true, ...input }) }] }));
+    async input => ({ content: [{ type: 'text', text: JSON.stringify({ fixture: true, pid: process.pid, ...input }) }] }));
   await server.connect(new StdioServerTransport());
 }

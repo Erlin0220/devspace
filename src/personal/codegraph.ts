@@ -17,6 +17,7 @@ export interface CodeGraphOptions {
   initArgs?: string[];
   startupTimeoutMs?: number;
   toolTimeoutMs?: number;
+  idleTimeoutMs?: number;
 }
 
 function commandOptions(options: CodeGraphOptions) {
@@ -33,7 +34,11 @@ function commandOptions(options: CodeGraphOptions) {
     if (!Number.isInteger(value) || value < 1 || value > 120_000) throw new Error("CodeGraph timeout must be 1..120000 ms");
     return value;
   };
-  return { command, args, startupTimeoutMs: timeout(options.startupTimeoutMs, 10_000), toolTimeoutMs: timeout(options.toolTimeoutMs, 60_000) };
+  const idleTimeoutMs = options.idleTimeoutMs ?? 30_000;
+  if (!Number.isInteger(idleTimeoutMs) || idleTimeoutMs < 0 || idleTimeoutMs > 600_000) {
+    throw new Error("CodeGraph idle timeout must be 0..600000 ms");
+  }
+  return { command, args, startupTimeoutMs: timeout(options.startupTimeoutMs, 10_000), toolTimeoutMs: timeout(options.toolTimeoutMs, 60_000), idleTimeoutMs };
 }
 
 function initializationOptions(options: CodeGraphOptions, root: string) {
@@ -59,6 +64,8 @@ function initializationOptions(options: CodeGraphOptions, root: string) {
 export class PersonalCodeGraph {
   private session?: Promise<{ client: Client; transport: StdioClientTransport }>;
   private initializations = new Map<string, Promise<void>>();
+  private idleTimer?: NodeJS.Timeout;
+  private activeCalls = 0;
   private closed = false;
   constructor(private options: CodeGraphOptions) {}
 
@@ -106,14 +113,42 @@ export class PersonalCodeGraph {
     return this.session;
   }
 
+  private clearIdleTimer() {
+    if (this.idleTimer) clearTimeout(this.idleTimer);
+    this.idleTimer = undefined;
+  }
+
+  private scheduleIdleDisconnect() {
+    this.clearIdleTimer();
+    if (this.closed || this.activeCalls > 0 || !this.session) return;
+    const timeoutMs = commandOptions(this.options).idleTimeoutMs;
+    if (timeoutMs === 0) return;
+    const expected = this.session;
+    const timer = setTimeout(() => {
+      this.idleTimer = undefined;
+      if (this.closed || this.activeCalls > 0 || this.session !== expected) return;
+      this.session = undefined;
+      void expected.then(({ client }) => client.close()).catch(() => {});
+    }, timeoutMs);
+    timer.unref();
+    this.idleTimer = timer;
+  }
+
   async explore(root: string, query: string, maxFiles?: number) {
-    await this.ensureInitialized(root);
-    const { client } = await this.connect();
-    const result = await client.callTool({ name: "codegraph_explore", arguments: { projectPath: root, query, maxFiles } },
-      undefined, { timeout: commandOptions(this.options).toolTimeoutMs });
-    const content = Array.isArray(result.content) ? result.content : [];
-    const text = content.flatMap(item => item.type === "text" && typeof item.text === "string" ? [item.text] : []).join("\n");
-    return { content: [{ type: "text" as const, text }], structuredContent: { result: text }, isError: result.isError === true };
+    this.clearIdleTimer();
+    this.activeCalls += 1;
+    try {
+      await this.ensureInitialized(root);
+      const { client } = await this.connect();
+      const result = await client.callTool({ name: "codegraph_explore", arguments: { projectPath: root, query, maxFiles } },
+        undefined, { timeout: commandOptions(this.options).toolTimeoutMs });
+      const content = Array.isArray(result.content) ? result.content : [];
+      const text = content.flatMap(item => item.type === "text" && typeof item.text === "string" ? [item.text] : []).join("\n");
+      return { content: [{ type: "text" as const, text }], structuredContent: { result: text }, isError: result.isError === true };
+    } finally {
+      this.activeCalls -= 1;
+      this.scheduleIdleDisconnect();
+    }
   }
 
   register(server: McpServer, workspaces: WorkspaceRegistry) {
@@ -132,6 +167,7 @@ export class PersonalCodeGraph {
   }
 
   async close() {
+    this.clearIdleTimer();
     this.closed = true;
     const session = await this.session?.catch(() => undefined);
     this.session = undefined;
