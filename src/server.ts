@@ -206,7 +206,14 @@ function serverInstructions(config: ServerConfig, commandRecoveryInstruction = "
       : "";
 
   if (config.toolMode === "codex") {
-    return `Use DevSpace for coding work. ${executionRoutingInstruction}Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${commandRecoveryInstruction}${artifactInstruction}${showChangesInstruction}`;
+    if (commandRecoveryInstruction) {
+      const personalRoutingInstruction =
+        "Use DevSpace whenever a software-development answer depends on the user's real local code, repository, files, runtime, tests/builds, or Git state; terse follow-ups inherit the active project. ";
+      const personalWorkspaceLifecycleInstruction =
+        `Call ${toolNames.openWorkspace} once per project folder or isolated worktree and reuse its workspaceId. Reopen only when the project/worktree changes or the current workspaceId is rejected. Follow project and nested instructions returned by ${toolNames.openWorkspace}. `;
+      return `${personalRoutingInstruction}${commandRecoveryInstruction}${personalWorkspaceLifecycleInstruction}Use ${toolNames.read} for direct file inspection, apply_patch for file modifications, exec_command for commands/tests/builds, and write_stdin for running sessions. Read applicable nested instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
+    }
+    return `Use DevSpace for coding work. ${executionRoutingInstruction}Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -878,17 +885,27 @@ export function createMcpServer(
       const visibleAgents = includeBootstrapContext ? cardAgents : [];
       const loadedAgentsFiles = includeBootstrapContext ? cardAgentsFiles : [];
       const availableAgentsFileOutputs = includeBootstrapContext ? cardAvailableAgentsFiles : [];
-      const cardInstruction = config.skillsEnabled
-        ? "Use this workspaceId for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. When a task matches an available skill in skills, read its path before proceeding."
-        : "Use this workspaceId for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file.";
+      const agentRecoveryInstruction = cardAgentProviders.length > 0
+        ? "Local subagent recovery is available in this workspace: after the one exec_command diagnostic attempt, use run_agent when needed and reuse its agent id with get_agent/continue_agent unless it terminally fails."
+        : undefined;
+      const cardInstruction = [
+        config.skillsEnabled
+          ? "Use this workspaceId for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. When a task matches an available skill in skills, read its path before proceeding."
+          : "Use this workspaceId for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file.",
+        agentRecoveryInstruction,
+      ].filter(Boolean).join(" ");
       const instruction = workspaceReused
         ? [
             `Workspace already open as ${workspace.id}.`,
             "Continue with this workspaceId.",
             "Keep following the project instructions, nested instruction files, skills, agent profiles, and diagnostics already provided for this workspace.",
-          ].join("\n\n")
+            agentRecoveryInstruction,
+          ].filter(Boolean).join("\n\n")
         : workspace.mode === "worktree"
-          ? "Use this workspaceId for subsequent work in this isolated worktree. Keep reusing it while working in this worktree. Follow the project instructions, nested instruction files, skills, agent profiles, and diagnostics returned for it."
+          ? [
+              "Use this workspaceId for subsequent work in this isolated worktree. Keep reusing it while working in this worktree. Follow the project instructions, nested instruction files, skills, agent profiles, and diagnostics returned for it.",
+              agentRecoveryInstruction,
+            ].filter(Boolean).join(" ")
           : cardInstruction;
       const resultContent: ToolContent[] = [
         {

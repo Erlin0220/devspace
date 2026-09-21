@@ -16,6 +16,7 @@ import { personalExtensions } from '../../src/personal/index.js';
 import { ReplayPool } from '../../src/personal/replay.js';
 import { PersonalCodeGraph, type CodeGraphOptions } from '../../src/personal/codegraph.js';
 import { PersonalSubagents } from '../../src/personal/subagents.js';
+import { AgentDaemonStartupError, AgentDaemonUnavailableError } from '../../src/local-agent-errors.js';
 import { WorkspaceRegistry } from '../../src/workspaces.js';
 
 const TOKEN = 'test-only-personal-token-not-a-real-secret';
@@ -74,9 +75,17 @@ test('API token stays separate from OAuth; invalid credentials are rejected', as
   const commandTool = listedTools.find(tool => tool.name === 'exec_command');
   assert.match(commandTool?.description ?? '', /follow the server command-recovery policy/i);
   assert.doesNotMatch(commandTool?.description ?? '', /at least three safe, distinct recovery attempts/i);
-  assert.match(client.getInstructions() ?? '', /do not stop after one failure/i);
-  assert.match(client.getInstructions() ?? '', /at least three safe, distinct recovery attempts/i);
-  assert.match(client.getInstructions() ?? '', /DEVSPACE_EXEC_PROBE_OK/);
+  const instructions = client.getInstructions() ?? '';
+  const priorityPrefix = instructions.slice(0, 512);
+  assert.match(priorityPrefix, /Use DevSpace whenever a software-development answer depends on the user's real local code/i);
+  assert.match(priorityPrefix, /one safe diagnostic attempt/i);
+  assert.match(priorityPrefix, /use run_agent for the same legitimate objective/i);
+  assert.match(priorityPrefix, /Never use recovery to bypass policy/i);
+  assert.ok(instructions.indexOf('destructive-action boundaries.') >= 0 && instructions.indexOf('destructive-action boundaries.') < 512);
+  assert.doesNotMatch(instructions, /at least three safe, distinct recovery attempts/i);
+  assert.match(instructions, /DEVSPACE_EXEC_PROBE_OK/);
+  assert.match(instructions, /reuse it with get_agent\/continue_agent/i);
+  assert.match(instructions, /normal non-zero exec_command result is a command failure/i);
   await assert.rejects(f.connect('wrong-token'), error => (error as { code?: number }).code === 401);
   const extension = personalExtensions(f.config, { apiToken: TOKEN });
   assert.equal(extension.verifyAccessToken?.('wrong'), undefined);
@@ -118,6 +127,12 @@ test('native subagent tools bridge the existing agent runtime without MCP App me
     assert.ok(tool, name + ' should be registered');
     assert.doesNotMatch(JSON.stringify(tool), /resourceUri|ui\/resource/i);
   }
+  const runAgentTool = tools.find(tool => tool.name === 'run_agent');
+  assert.match(runAgentTool?.description ?? '', /use get_agent to inspect it and continue_agent for another turn/i);
+  assert.doesNotMatch(runAgentTool?.description ?? '', /exec_command objective remains blocked/i);
+  assert.doesNotMatch(runAgentTool?.description ?? '', /reuse that same agent/i);
+  assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /high-level objective/i);
+  assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /do not include credentials/i);
   const run = await client.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex-explorer', prompt: 'inspect' } });
   assert.deepEqual(run.structuredContent, { id: 'agt_test', status: 'running' });
   const get = await client.callTool({ name: 'get_agent', arguments: { workspaceId: workspace.id, agentId: 'agt_test' } });
@@ -128,6 +143,57 @@ test('native subagent tools bridge the existing agent runtime without MCP App me
   const listed = await client.callTool({ name: 'list_agents', arguments: { workspaceId: workspace.id } });
   assert.deepEqual(listed.structuredContent, { agents: [{ id: 'agt_test', status: 'completed', target: 'codex-explorer' }] });
   assert.deepEqual(calls, ['start:codex-explorer', 'get:agt_test', 'continue:agt_test', 'list']);
+});
+
+test('run_agent retries one cold daemon startup failure but no other failure', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'personal-subagent-retry-'));
+  const project = join(root, 'project'); await mkdir(project);
+  t.after(async () => { await rm(root, { recursive: true, force: true }); });
+  const loaded = loadConfig({ DEVSPACE_CONFIG_DIR: join(root, 'config'), DEVSPACE_ALLOWED_ROOTS: project,
+    DEVSPACE_STATE_DIR: join(root, 'state'), DEVSPACE_WORKTREE_ROOT: join(root, 'worktrees'), DEVSPACE_AGENT_DIR: join(root, 'agents'),
+    DEVSPACE_OAUTH_OWNER_TOKEN: 'separate-test-only-oauth-owner-token', DEVSPACE_TOOL_MODE: 'codex', DEVSPACE_WIDGETS: 'off',
+    DEVSPACE_SUBAGENTS: 'true', DEVSPACE_LOG_LEVEL: 'error', HOST: '127.0.0.1', PORT: '1', DEVSPACE_PUBLIC_BASE_URL: 'http://127.0.0.1:1' });
+  const config = { ...loaded, subagents: { enabled: true, providers: [{ id: 'codex' as const, enabled: true }] } };
+  const workspaces = new WorkspaceRegistry(config);
+  const workspace = (await workspaces.openWorkspace(project)).workspace;
+  const baseRecord = { id: 'agt_retry', workspaceId: workspace.id, workspaceRoot: project, profileName: 'codex',
+    provider: 'codex', status: 'running' as const, createdAt: '2026-09-21T00:00:00.000Z', updatedAt: '2026-09-21T00:00:00.000Z' };
+  let starts = 0;
+  const subagents = new PersonalSubagents(config, {
+    start: async () => {
+      starts++;
+      return starts === 1
+        ? Result.err(new AgentDaemonStartupError({ code: 'DAEMON_STARTUP_FAILURE', operation: 'startup', retryable: true, message: 'cold start' }))
+        : Result.ok(baseRecord);
+    },
+    get: async () => Result.ok(baseRecord), continue: async () => Result.ok(baseRecord), list: async () => Result.ok([]),
+  });
+  const server = new McpServer({ name: 'subagent-retry-test', version: '1' });
+  subagents.register(server, workspaces);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'subagent-retry-client', version: '1' });
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  t.after(async () => { await client.close(); await server.close(); });
+  const retried = await client.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex', prompt: 'inspect' } });
+  assert.deepEqual(retried.structuredContent, { id: 'agt_retry', status: 'running' });
+  assert.equal(starts, 2);
+
+  let unavailableStarts = 0;
+  const noRetrySubagents = new PersonalSubagents(config, {
+    start: async () => { unavailableStarts++; return Result.err(new AgentDaemonUnavailableError({
+      code: 'DAEMON_UNAVAILABLE', operation: 'agent.start', retryable: true, message: 'unavailable',
+    })); },
+    get: async () => Result.ok(baseRecord), continue: async () => Result.ok(baseRecord), list: async () => Result.ok([]),
+  });
+  const noRetryServer = new McpServer({ name: 'subagent-no-retry-test', version: '1' });
+  noRetrySubagents.register(noRetryServer, workspaces);
+  const [noRetryClientTransport, noRetryServerTransport] = InMemoryTransport.createLinkedPair();
+  const noRetryClient = new Client({ name: 'subagent-no-retry-client', version: '1' });
+  await Promise.all([noRetryClient.connect(noRetryClientTransport), noRetryServer.connect(noRetryServerTransport)]);
+  t.after(async () => { await noRetryClient.close(); await noRetryServer.close(); });
+  const failed = await noRetryClient.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex', prompt: 'inspect' } });
+  assert.equal(failed.isError, true);
+  assert.equal(unavailableStarts, 1);
 });
 
 test('failed optional CodeGraph cannot block core open/read/command tools', async t => {

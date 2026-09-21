@@ -73,6 +73,8 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.ok(Array.isArray(firstStructured.skillDiagnostics));
   assert.equal("workspaceReused" in firstStructured, false);
   assert.equal("includeBootstrapContext" in firstStructured, false);
+  assert.match(String(firstStructured.instruction ?? ""), /Local subagent recovery is available in this workspace/i);
+  assert.match(String(firstStructured.instruction ?? ""), /reuse its agent id with get_agent\/continue_agent/i);
 
   const repeatedStructured = structuredContent(repeated);
   assert.equal(repeatedStructured.agentsFiles, undefined);
@@ -83,6 +85,8 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.equal(repeatedStructured.skillDiagnostics, undefined);
   assert.equal("workspaceReused" in repeatedStructured, false);
   assert.equal("includeBootstrapContext" in repeatedStructured, false);
+  assert.match(String(repeatedStructured.instruction ?? ""), /Local subagent recovery is available in this workspace/i);
+  assert.match(String(repeatedStructured.instruction ?? ""), /reuse its agent id with get_agent\/continue_agent/i);
 
   const card = responseCard(repeated);
   assert.equal(card.workspaceReused, true);
@@ -107,6 +111,7 @@ test("open_workspace refreshes provider availability for each catalog", async (t
   const unavailable = structuredContent(await callOpen(context.client, context.project, "chat-1"));
   assert.deepEqual(unavailable.agentProviders, []);
   assert.deepEqual(unavailable.agents, []);
+  assert.doesNotMatch(String(unavailable.instruction ?? ""), /Local subagent recovery is available in this workspace/i);
 
   available = true;
   const usable = structuredContent(await callOpen(context.client, context.project, "chat-2"));
@@ -118,6 +123,7 @@ test("open_workspace refreshes provider availability for each catalog", async (t
     (usable.agents as Array<Record<string, unknown>>)[0]?.name,
     "reviewer",
   );
+  assert.match(String(usable.instruction ?? ""), /Local subagent recovery is available in this workspace/i);
 });
 
 test("open_workspace omits providers disabled by configuration", async (t) => {

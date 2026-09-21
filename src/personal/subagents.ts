@@ -71,14 +71,14 @@ export class PersonalSubagents {
       {
         title: "Run DevSpace subagent",
         description:
-          "Start a bounded DevSpace subagent in the current workspace. Prefer a named profile advertised by open_workspace.agents when one fits; an enabled provider target is also supported by DevSpace. The subagent runs independently; use get_agent with the returned agent id to inspect its current state or result.",
+          "Start a bounded DevSpace subagent in the current workspace using an advertised profile or enabled provider. The subagent runs independently; use get_agent to inspect it and continue_agent for another turn.",
         inputSchema: {
           workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
           target: z.string().min(1).describe(
             "Subagent profile name advertised by open_workspace.agents, or an enabled provider name when no profile fits.",
           ),
           prompt: z.string().min(1).describe(
-            "Self-contained task brief. Include the objective, relevant constraints/context, and expected result.",
+            "Self-contained task brief. Include the objective, relevant constraints/context, and expected result. For command-recovery delegation, describe the legitimate high-level objective instead of copying or disguising a rejected command, and do not include credentials.",
           ),
         },
         outputSchema: agentReceiptOutputSchema,
@@ -91,12 +91,21 @@ export class PersonalSubagents {
       },
       async ({ workspaceId, target, prompt }) => {
         const workspace = workspaces.getWorkspace(workspaceId);
-        const result = await this.client.start({
+        const input = {
           target,
           prompt,
           workspaceId,
           workspaceRoot: workspace.root,
-        });
+        };
+        let result = await this.client.start(input);
+        if (result.isErr()) {
+          const failure = toAgentErrorPayload(result.error);
+          // DAEMON_STARTUP_FAILURE is produced before agent.start is sent, so one
+          // retry can absorb a cold daemon startup without duplicating an agent.
+          if (failure.code === "DAEMON_STARTUP_FAILURE" && failure.retryable === true) {
+            result = await this.client.start(input);
+          }
+        }
         return result.isErr()
           ? agentErrorResponse(result.error)
           : agentReceiptResponse(result.value);
