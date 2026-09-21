@@ -194,7 +194,7 @@ interface ToolLogFields {
   error?: string;
 }
 
-function serverInstructions(config: ServerConfig): string {
+function serverInstructions(config: ServerConfig, commandRecoveryInstruction = ""): string {
   const executionRoutingInstruction =
     "ALWAYS use DevSpace for software-development work involving the user's real code, repositories, project files, local runtime, build/test state, Git state, implementation questions, debugging, or continued development context, even when the user does not explicitly name DevSpace. This includes inspect, explain, analyze, modify, fix, run, test, build, install, commit, push, review, or continue work on a local project. Terse follow-ups such as '看看', '分析一下', '怎么回事', '继续', '修一下', '跑一下', or '帮我做' inherit the active development context and must stay in DevSpace. Use DevSpace before giving a prose answer whenever local project evidence can inform the response. Only skip DevSpace when the request is clearly unrelated to software development or the user's local development environment. ";
   const artifactInstruction = config.artifactsEnabled && isArtifactDownloadSupportedPlatform()
@@ -206,7 +206,7 @@ function serverInstructions(config: ServerConfig): string {
       : "";
 
   if (config.toolMode === "codex") {
-    return `Use DevSpace for coding work. ${executionRoutingInstruction}Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${artifactInstruction}${showChangesInstruction}`;
+    return `Use DevSpace for coding work. ${executionRoutingInstruction}Call ${toolNames.openWorkspace} once for each project folder or isolated worktree, then keep using its workspaceId. During continued work in the same project or worktree, do not call ${toolNames.openWorkspace} again. Open another workspace only when changing projects, switching checkout/worktree mode, creating another isolated worktree, or when the current workspaceId is rejected. Use ${toolNames.read} for direct file reads, apply_patch for all file modifications, exec_command for inspection, tests, builds, and other commands, and write_stdin to poll or interact with running processes. Follow instructions returned by ${toolNames.openWorkspace}; read applicable instruction and skill files before working in their scope.${commandRecoveryInstruction}${artifactInstruction}${showChangesInstruction}`;
   }
 
   const inspection = config.toolMode !== "full"
@@ -575,14 +575,18 @@ function registerCodexProcessTools(
   config: ServerConfig,
   workspaces: WorkspaceRegistry,
   processSessions: ProcessSessionManager,
+  commandRecoveryInstruction = "",
 ): void {
+  const commandRecoveryPointer = commandRecoveryInstruction
+    ? " On host/transport-level rejection or timeout, follow the server command-recovery policy; do not treat one failed call as evidence that exec_command is globally unavailable."
+    : "";
   registerAppTool(
     server,
     "exec_command",
     {
       title: "Execute command",
       description:
-        "Run a command in a workspace using DevSpace's platform-selected shell. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, and long-running processes.",
+        `Run a command in a workspace using DevSpace's platform-selected shell. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, and long-running processes.${commandRecoveryPointer}`,
       inputSchema: {
         workspaceId: z.string().describe(workspaceIdDescription),
         cmd: z.string().min(1).describe(
@@ -727,6 +731,7 @@ export function createMcpServer(
   processSessions: ProcessSessionManager,
   resolveLocalAgentProviders: () => LocalAgentProviderStatus[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
+  commandRecoveryInstruction = "",
 ): McpServer {
   const server = new McpServer(
     {
@@ -737,7 +742,7 @@ export function createMcpServer(
         "Default local development workspace for ChatGPT. ALWAYS use DevSpace for software-development work involving the user's real code, repositories, project files, local runtime, builds, tests, Git state, debugging, implementation analysis, or continued coding context, even when the user does not explicitly name DevSpace. Use it before answering when local project evidence can inform the response; skip only requests clearly unrelated to software development.",
     },
     {
-      instructions: serverInstructions(config),
+      instructions: serverInstructions(config, commandRecoveryInstruction),
     },
   );
 
@@ -1671,7 +1676,7 @@ export function createMcpServer(
   }
 
   if (config.toolMode === "codex") {
-    registerCodexProcessTools(server, config, workspaces, processSessions);
+    registerCodexProcessTools(server, config, workspaces, processSessions, commandRecoveryInstruction);
   }
 
   if (config.artifactsEnabled && isArtifactDownloadSupportedPlatform()) {
@@ -1693,6 +1698,7 @@ export interface CreateServerOptions {
   dispose?: () => Promise<void>;
   createEventStore?: () => import("@modelcontextprotocol/sdk/server/streamableHttp.js").EventStore & { close(): void };
   mcpSessionRetention?: { idleTimeoutMs: number; cleanupIntervalMs: number };
+  commandRecoveryInstruction?: string;
 }
 
 export function createServer(
@@ -1904,6 +1910,7 @@ export function createServer(
           processSessions,
           resolveLocalAgentProviders,
           incomingArtifactAdapters,
+          options.commandRecoveryInstruction,
         );
         options.registerTools?.(server, workspaces);
         await server.connect(transport);

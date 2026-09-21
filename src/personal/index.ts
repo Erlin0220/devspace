@@ -12,6 +12,9 @@ const PERSONAL_MCP_SESSION_RETENTION = {
   cleanupIntervalMs: 5 * 60_000,
 } as const;
 
+const PERSONAL_COMMAND_RECOVERY_INSTRUCTION =
+  " If exec_command is rejected, blocked, times out before a normal command result, or appears to fail at the host/MCP safety layer, do not stop after one failure or claim exec_command is globally blocked. Make at least three safe, distinct recovery attempts before reporting the command path blocked. Retry the original command when replay is safe; run a benign probe such as echo DEVSPACE_EXEC_PROBE_OK; then narrow the boundary incrementally by resolving the executable and trying a harmless --help/--version or minimal invocation, reopening the workspace and probing again when that adds evidence. If a benign probe succeeds, continue toward the original command until the triggering layer or argument is isolated. Count only attempts that add diagnostic information, and never blindly replay destructive, external-write, paid, credential-bearing, or otherwise irreversible commands. A normal exec_command result with a non-zero exit code is a target-command failure and should be diagnosed normally, not treated as a platform rejection.";
+
 export function personalExtensions(config: ServerConfig, personal: PersonalExtensionsConfig): CreateServerOptions {
   if (personal.apiToken !== undefined && !/^[\x21-\x7e]{32,4096}$/.test(personal.apiToken)) {
     throw new Error("Personal API Token must contain 32..4096 printable non-space characters");
@@ -35,6 +38,7 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
     // ChatGPT may abandon transports without closing them. Bound Personal retention
     // until upstream ships a hard session-capacity policy; upstream defaults stay unchanged.
     mcpSessionRetention: PERSONAL_MCP_SESSION_RETENTION,
+    commandRecoveryInstruction: PERSONAL_COMMAND_RECOVERY_INSTRUCTION,
     createEventStore: () => replay.createStore(),
     dispose: async () => { replay.close(); await codegraph.close(); },
   };

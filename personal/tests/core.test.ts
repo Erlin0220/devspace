@@ -67,9 +67,16 @@ test('Personal bounds abandoned MCP session retention without changing upstream 
 
 test('API token stays separate from OAuth; invalid credentials are rejected', async t => {
   const f = await fixture(t); const client = await f.connect();
-  const tools = (await client.listTools()).tools.map(tool => tool.name);
+  const listedTools = (await client.listTools()).tools;
+  const tools = listedTools.map(tool => tool.name);
   assert.ok(tools.includes('exec_command')); assert.ok(tools.includes('apply_patch'));
   assert.equal(tools.some(name => /memory/i.test(name)), false);
+  const commandTool = listedTools.find(tool => tool.name === 'exec_command');
+  assert.match(commandTool?.description ?? '', /follow the server command-recovery policy/i);
+  assert.doesNotMatch(commandTool?.description ?? '', /at least three safe, distinct recovery attempts/i);
+  assert.match(client.getInstructions() ?? '', /do not stop after one failure/i);
+  assert.match(client.getInstructions() ?? '', /at least three safe, distinct recovery attempts/i);
+  assert.match(client.getInstructions() ?? '', /DEVSPACE_EXEC_PROBE_OK/);
   await assert.rejects(f.connect('wrong-token'), error => (error as { code?: number }).code === 401);
   const extension = personalExtensions(f.config, { apiToken: TOKEN });
   assert.equal(extension.verifyAccessToken?.('wrong'), undefined);
