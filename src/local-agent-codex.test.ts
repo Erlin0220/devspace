@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import {
   CodexAppServerRuntime,
   CodexLocalAgentDriver,
+  codexExecArgs,
   codexThreadParams,
   codexCommandEnvironment,
   parseCodexVersion,
@@ -32,16 +33,39 @@ assert.equal(sandboxFor("read_only"), "read-only");
 assert.equal(sandboxFor("allowed"), "workspace-write");
 assert.equal(sandboxFor("full_access"), "danger-full-access");
 assert.equal(
-  codexThreadParams({ prompt: "inspect", workspaceRoot: "/tmp/project", writeMode: "read_only" }).threadSource,
-  "subAgent",
-);
-assert.equal(
   "threadSource" in codexThreadParams({
     prompt: "continue",
     workspaceRoot: "/tmp/project",
     providerSessionId: "thread_existing",
   }),
   false,
+);
+assert.deepEqual(
+  codexExecArgs({
+    prompt: "inspect",
+    workspaceRoot: "/tmp/project",
+    writeMode: "read_only",
+    model: "gpt-test",
+    effort: "high",
+  }),
+  [
+    "exec",
+    "--json",
+    "--thread-source",
+    "subagent",
+    "--sandbox",
+    "read-only",
+    "--cd",
+    "/tmp/project",
+    "--skip-git-repo-check",
+    "--config",
+    'approval_policy="never"',
+    "--model",
+    "gpt-test",
+    "--config",
+    'model_reasoning_effort="high"',
+    "-",
+  ],
 );
 assert.equal(
   codexCommandEnvironment({ CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "test", PATH: "/tmp/bin" }).CODEX_INTERNAL_ORIGINATOR_OVERRIDE,
@@ -69,9 +93,20 @@ if (process.platform !== "win32") {
   const command = join(root, "fake-codex");
   await writeFile(command, `#!/usr/bin/env node
 import readline from "node:readline";
-let turn = 0;
+let turn = process.argv[2] === "app-server" ? 1 : 0;
 const output = (value) => process.stdout.write(JSON.stringify(value) + "\\n");
-readline.createInterface({ input: process.stdin }).on("line", (line) => {
+if (process.argv[2] === "exec") {
+  let prompt = "";
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (chunk) => { prompt += chunk; });
+  process.stdin.on("end", () => {
+    output({ type: "thread.started", thread_id: "thread_new" });
+    output({ type: "turn.started" });
+    const item = { type: "agent_message", text: prompt.trim() === "first" ? "fake response 1" : "unexpected prompt" };
+    output({ type: "item.completed", item });
+    output({ type: "turn.completed", usage: { input_tokens: 1, cached_input_tokens: 0, output_tokens: 1 } });
+  });
+} else readline.createInterface({ input: process.stdin }).on("line", (line) => {
   const message = JSON.parse(line);
   if (message.method === "initialize") {
     output({ id: message.id, result: { userAgent: "fake" } });

@@ -83,6 +83,7 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
   readonly provider = "codex" as const;
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly rpc: CodexAppServerRpc;
+  private readonly execChildren = new Set<ChildProcessWithoutNullStreams>();
   private alive = true;
   private closePromise?: Promise<void>;
 
@@ -129,8 +130,11 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
             message: "Codex app-server is not running.",
           });
         }
+        if (!input.providerSessionId) {
+          return this.runInitialExec(input, callbacks);
+        }
         const threadResponse = await this.rpc.request(
-          input.providerSessionId ? "thread/resume" : "thread/start",
+          "thread/resume",
           codexThreadParams(input),
         );
         const threadId = readString(asRecord(threadResponse)?.thread, "id");
@@ -178,6 +182,154 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
     });
   }
 
+  private async runInitialExec(
+    input: LocalAgentRunInput,
+    callbacks?: LocalAgentRunCallbacks,
+  ): Promise<LocalAgentRunResult> {
+    const child = spawn(this.options.command, codexExecArgs(input), {
+      env: this.options.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+      windowsHide: true,
+      shell: usesWindowsCommandShell(this.options.command),
+    });
+    this.execChildren.add(child);
+    let spawnError: unknown;
+    let stderr = "";
+    child.once("error", (error) => { spawnError = error; });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = appendTail(stderr, chunk.toString("utf8"), MAX_STDERR_BYTES);
+    });
+    const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
+      child.once("exit", (code, signal) => resolveExit({ code, signal }));
+    });
+    child.stdin.end(input.prompt);
+
+    let threadId: string | undefined;
+    let finalResponse = "";
+    let turnCompleted = false;
+    let turnFailure: string | undefined;
+    const items: unknown[] = [];
+    const lines = createInterface({ input: child.stdout, crlfDelay: Infinity });
+    try {
+      for await (const line of lines) {
+        if (!line.trim()) continue;
+        let event: Record<string, unknown>;
+        try {
+          event = JSON.parse(line) as Record<string, unknown>;
+        } catch (cause) {
+          throw new AgentProviderProtocolError({
+            code: "PROVIDER_PROTOCOL_ERROR",
+            provider: this.provider,
+            operation: "run",
+            retryable: false,
+            cause,
+            message: "Codex exec emitted malformed JSON.",
+          });
+        }
+        const type = directString(event.type);
+        if (type === "thread.started") {
+          threadId = directString(event.thread_id);
+          if (!threadId) {
+            throw new AgentProviderProtocolError({
+              code: "PROVIDER_PROTOCOL_ERROR",
+              provider: this.provider,
+              operation: "open_thread",
+              retryable: false,
+              cause: event,
+              message: "Codex exec did not return a thread id.",
+            });
+          }
+          await callbacks?.onSessionId?.(threadId);
+          continue;
+        }
+        if (type === "item.completed") {
+          const item = event.item;
+          items.push(item);
+          if (items.length > MAX_TURN_ITEMS) items.shift();
+          const itemRecord = asRecord(item);
+          if (itemRecord?.type === "agent_message" && typeof itemRecord.text === "string") {
+            finalResponse = itemRecord.text;
+          }
+          continue;
+        }
+        if (type === "turn.failed") {
+          turnFailure = directString(asRecord(event.error)?.message) ?? "Codex agent turn failed.";
+          continue;
+        }
+        if (type === "turn.completed") turnCompleted = true;
+      }
+
+      if (spawnError) {
+        throw new AgentProviderUnavailableError({
+          code: "PROVIDER_UNAVAILABLE",
+          provider: this.provider,
+          operation: "run",
+          retryable: true,
+          cause: spawnError,
+          message: "Codex exec could not be started.",
+        });
+      }
+      const { code, signal } = await exitPromise;
+      if (code !== 0 || signal) {
+        throw new AgentProviderExecutionError({
+          code: "PROVIDER_EXECUTION_ERROR",
+          provider: this.provider,
+          operation: "run",
+          retryable: false,
+          cause: codexAppServerError(
+            `Codex exec exited with ${signal ? `signal ${signal}` : `code ${code ?? 1}`}.`,
+            this.options.version,
+            stderr,
+          ),
+          message: "Codex exec failed.",
+        });
+      }
+      if (turnFailure) {
+        throw new AgentProviderExecutionError({
+          code: "PROVIDER_EXECUTION_ERROR",
+          provider: this.provider,
+          operation: "run",
+          retryable: false,
+          cause: turnFailure,
+          message: turnFailure,
+        });
+      }
+      if (!threadId || !turnCompleted) {
+        throw new AgentProviderProtocolError({
+          code: "PROVIDER_PROTOCOL_ERROR",
+          provider: this.provider,
+          operation: "run",
+          retryable: false,
+          cause: { threadId, turnCompleted },
+          message: "Codex exec ended before completing a durable turn.",
+        });
+      }
+      if (!finalResponse.trim()) {
+        throw new AgentProviderProtocolError({
+          code: "PROVIDER_PROTOCOL_ERROR",
+          provider: this.provider,
+          operation: "run",
+          retryable: false,
+          cause: items,
+          message: "Codex did not return a final assistant response.",
+        });
+      }
+      return {
+        provider: this.provider,
+        providerSessionId: threadId,
+        finalResponse: finalResponse.trim(),
+        items,
+      };
+    } finally {
+      lines.close();
+      this.execChildren.delete(child);
+      if (child.exitCode === null && !child.killed) {
+        terminateProcessTree(child, "SIGTERM", process.platform !== "win32");
+      }
+    }
+  }
+
   async releaseSession(providerSessionId: string): Promise<void> {
     if (!this.alive) return;
     try {
@@ -196,6 +348,11 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
     this.closePromise = (async () => {
       this.alive = false;
       this.rpc.fail(new Error("codex app-server closed."));
+      for (const execChild of this.execChildren) {
+        if (execChild.exitCode === null && !execChild.killed) {
+          terminateProcessTree(execChild, "SIGTERM", process.platform !== "win32");
+        }
+      }
       if (!this.child.stdin.destroyed) this.child.stdin.end();
       if (this.child.exitCode === null) {
         terminateProcessTree(this.child, "SIGTERM", process.platform !== "win32");
@@ -453,14 +610,32 @@ class CodexAppServerRpc {
 
 export function codexThreadParams(input: LocalAgentRunInput): Record<string, unknown> {
   return {
-    ...(input.providerSessionId
-      ? { threadId: input.providerSessionId }
-      : { threadSource: "subAgent" }),
+    ...(input.providerSessionId ? { threadId: input.providerSessionId } : {}),
     cwd: input.workspaceRoot,
     approvalPolicy: "never",
     sandbox: sandboxFor(input.writeMode),
     ...(input.model ? { model: input.model } : {}),
   };
+}
+
+export function codexExecArgs(input: LocalAgentRunInput): string[] {
+  const args = [
+    "exec",
+    "--json",
+    "--thread-source",
+    "subagent",
+    "--sandbox",
+    sandboxFor(input.writeMode),
+    "--cd",
+    input.workspaceRoot,
+    "--skip-git-repo-check",
+    "--config",
+    'approval_policy="never"',
+  ];
+  if (input.model) args.push("--model", input.model);
+  if (input.effort) args.push("--config", `model_reasoning_effort="${input.effort}"`);
+  args.push("-");
+  return args;
 }
 
 function turnParams(input: LocalAgentRunInput, threadId: string): Record<string, unknown> {
