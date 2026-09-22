@@ -1,9 +1,26 @@
 ---
 name: subagents
-description: Delegate focused coding, research, review, or verification work to a bounded DevSpace subagent. Use when a task benefits from separate context, a specialist perspective, or a follow-up with the same worker.
+description: Delegate work to a bounded DevSpace subagent only when the user explicitly requests a subagent, when a clearly independent large task materially benefits from isolated context or parallelism without shared mutable state, or when a DevSpace recovery rule specifically requires delegation. Keep ordinary code reading, debugging, implementation, Skill execution, tests, builds, and sequential decisions in the host; do not delegate merely to reduce host context.
 ---
 
 # DevSpace subagents
+
+The host is the default executor and orchestrator. Keep work in the host unless
+delegation has a concrete benefit that outweighs the loss of shared context.
+
+Do not delegate merely because a task could be done separately, involves codebase
+search, produces substantial output, or might keep the host context cleaner.
+Ordinary repository inspection, diagnosis, implementation, Skill execution,
+testing, building, and sequential decision-making stay with the host.
+
+Delegate only when at least one of these is true:
+
+- The user explicitly asks to use a subagent.
+- A large, bounded task is genuinely independent and can run in parallel without
+  sharing mutable state or owning the parent task's decisions.
+- A clearly isolated investigation would otherwise dominate the host context and
+  the host already has enough understanding to define and evaluate the result.
+- A DevSpace command-recovery rule specifically calls for subagent delegation.
 
 Prefer DevSpace's native MCP subagent tools when the host exposes them:
 
@@ -83,7 +100,10 @@ existing context is useful; start another agent for unrelated work.
 
 ## Good uses
 
-- Review a change for correctness, security, or missing tests.
-- Investigate a bounded part of a codebase and report findings.
-- Implement one isolated change with clear acceptance criteria.
-- Run a focused verification pass after other work.
+- A user-requested independent review or investigation.
+- A large read-only exploration that is clearly separable from the host's active
+  reasoning and whose result the host will evaluate before acting on it.
+- One isolated parallel work item with clear acceptance criteria and no shared
+  mutable state with the host or another worker.
+- Recovery delegation required by DevSpace after the normal host execution path
+  has been attempted as specified by the server policy.
