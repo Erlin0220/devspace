@@ -131,7 +131,7 @@ export class CodexAppServerRuntime implements LocalAgentRuntime {
         }
         const threadResponse = await this.rpc.request(
           input.providerSessionId ? "thread/resume" : "thread/start",
-          threadParams(input),
+          codexThreadParams(input),
         );
         const threadId = readString(asRecord(threadResponse)?.thread, "id");
         if (!threadId) {
@@ -451,9 +451,11 @@ class CodexAppServerRpc {
   }
 }
 
-function threadParams(input: LocalAgentRunInput): Record<string, unknown> {
+export function codexThreadParams(input: LocalAgentRunInput): Record<string, unknown> {
   return {
-    ...(input.providerSessionId ? { threadId: input.providerSessionId } : {}),
+    ...(input.providerSessionId
+      ? { threadId: input.providerSessionId }
+      : { threadSource: "subAgent" }),
     cwd: input.workspaceRoot,
     approvalPolicy: "never",
     sandbox: sandboxFor(input.writeMode),

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import {
   CodexAppServerRuntime,
   CodexLocalAgentDriver,
+  codexThreadParams,
   codexCommandEnvironment,
   parseCodexVersion,
   resolveCodexCommand,
@@ -30,6 +31,18 @@ assert.equal(parseCodexVersion("codex-cli 0.9.1"), "0.9.1");
 assert.equal(sandboxFor("read_only"), "read-only");
 assert.equal(sandboxFor("allowed"), "workspace-write");
 assert.equal(sandboxFor("full_access"), "danger-full-access");
+assert.equal(
+  codexThreadParams({ prompt: "inspect", workspaceRoot: "/tmp/project", writeMode: "read_only" }).threadSource,
+  "subAgent",
+);
+assert.equal(
+  "threadSource" in codexThreadParams({
+    prompt: "continue",
+    workspaceRoot: "/tmp/project",
+    providerSessionId: "thread_existing",
+  }),
+  false,
+);
 assert.equal(
   codexCommandEnvironment({ CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "test", PATH: "/tmp/bin" }).CODEX_INTERNAL_ORIGINATOR_OVERRIDE,
   undefined,
