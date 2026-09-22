@@ -4,7 +4,7 @@ import { basename, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { ServerConfig } from "./config.js";
 
-export type LocalAgentProvider = "codex" | "claude" | "opencode" | "pi" | "cursor" | "copilot" | "grok";
+export type LocalAgentProvider = "codex" | "claude" | "opencode" | "pi" | "cursor" | "copilot" | "grok" | "agy";
 
 export const LOCAL_AGENT_PROVIDERS: readonly LocalAgentProvider[] = [
   "codex",
@@ -14,6 +14,7 @@ export const LOCAL_AGENT_PROVIDERS: readonly LocalAgentProvider[] = [
   "cursor",
   "copilot",
   "grok",
+  "agy",
 ];
 
 export interface LocalAgentProfile {
@@ -172,8 +173,10 @@ function readProvider(frontmatter: Record<string, unknown>, filePath: string): L
     throw new Error(`Subagent profile is missing provider: ${filePath}`);
   }
   if (!PROVIDERS.has(provider as LocalAgentProvider)) {
+    const prefix = LOCAL_AGENT_PROVIDERS.slice(0, -1).join(", ");
+    const last = LOCAL_AGENT_PROVIDERS.at(-1);
     throw new Error(
-      `Subagent profile provider must be codex, claude, opencode, pi, cursor, copilot, or grok: ${filePath}`,
+      `Subagent profile provider must be ${prefix}, or ${last}: ${filePath}`,
     );
   }
   return provider as LocalAgentProvider;

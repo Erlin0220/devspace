@@ -20,6 +20,7 @@ const providers: LocalAgentProvider[] = [
   "cursor",
   "copilot",
   "grok",
+  "agy",
 ];
 
 for (const provider of providers) {

@@ -4,6 +4,7 @@ import {
   resolveSubagentsConfig,
   subagentProviderConfig,
 } from "./local-agent-config.js";
+import { LOCAL_AGENT_PROVIDERS } from "./local-agent-profiles.js";
 
 const config = resolveSubagentsConfig({
   enabled: true,
@@ -29,7 +30,7 @@ assert.equal(resolveSubagentsConfig({ ...config, enabled: false }, {
   DEVSPACE_SUBAGENTS: "1",
 }).enabled, true);
 assert.equal(resolveSubagentsConfig(undefined, {}).providers.length, 0);
-assert.equal(resolveSubagentsConfig(true, {}).providers.length, 7);
+assert.equal(resolveSubagentsConfig(true, {}).providers.length, LOCAL_AGENT_PROVIDERS.length);
 
 assert.throws(
   () => resolveSubagentsConfig({

@@ -1,4 +1,5 @@
 import type { LocalAgentProvider } from "./local-agent-profiles.js";
+import { AgyLocalAgentDriver } from "./local-agent-agy.js";
 import {
   AcpLocalAgentDriver,
   resolveAcpCommand,
@@ -44,6 +45,7 @@ export function createLocalAgentDrivers(
     new AcpLocalAgentDriver("cursor", options.env),
     new AcpLocalAgentDriver("copilot", options.env),
     new AcpLocalAgentDriver("grok", options.env),
+    new AgyLocalAgentDriver(options.env),
   ];
 }
 
@@ -60,6 +62,7 @@ export function createLocalAgentAdapter(
     case "copilot":
     case "grok":
       return new AcpLocalAgentDriver(provider, options.env);
+    case "agy": return new AgyLocalAgentDriver(options.env);
   }
 }
 

@@ -34,7 +34,7 @@ import {
   });
   assert.deepEqual(
     snapshot.map((provider) => provider.name),
-    ["codex", "claude", "opencode", "pi", "cursor", "copilot", "grok"],
+    ["codex", "claude", "opencode", "pi", "cursor", "copilot", "grok", "agy"],
   );
   assert.equal(snapshot.find((provider) => provider.name === "pi")?.available, true);
 }
