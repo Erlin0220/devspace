@@ -43,6 +43,7 @@ const subagents: SubagentsConfig = {
   providers: [
     { id: "codex", enabled: true, model: "gpt-default", effort: "medium" },
     { id: "claude", enabled: true },
+    { id: "agy", enabled: true, model: "gemini-3.7-flash-high", effort: "high" },
   ],
 };
 let currentSubagents = subagents;
@@ -105,6 +106,44 @@ const driver: LocalAgentDriver = {
   },
 };
 
+class FakeAgyRuntime implements LocalAgentRuntime {
+  readonly provider = "agy" as const;
+  readonly inputs: LocalAgentRunInput[] = [];
+
+  async run(input: LocalAgentRunInput): Promise<BetterResult<LocalAgentRunResult, AgentProviderError>> {
+    this.inputs.push(input);
+    return Result.ok({
+      provider: this.provider,
+      providerSessionId: "agy_thread_test",
+      finalResponse: "agy response",
+      items: [],
+    });
+  }
+
+  releaseSession(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  isAlive(): boolean {
+    return true;
+  }
+
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+const agyRuntimes = new Map<string, FakeAgyRuntime>();
+const agyDriver: LocalAgentDriver = {
+  provider: "agy",
+  runtimeKey: (context: LocalAgentRuntimeContext) => context.agentId,
+  createRuntime: async (context) => {
+    const runtime = new FakeAgyRuntime();
+    agyRuntimes.set(context.agentId, runtime);
+    return Result.ok(runtime);
+  },
+};
+
 function providerFailure(message: string): AgentProviderExecutionError {
   return new AgentProviderExecutionError({
     code: "PROVIDER_EXECUTION_ERROR",
@@ -126,7 +165,7 @@ store.update(stale.id, { status: "running", latestResponse: "previous response" 
 
 const manager = new LocalAgentManager({
   store,
-  drivers: [driver],
+  drivers: [driver, agyDriver],
   pool: new LocalAgentRuntimePool(),
   loadProfiles: async () => [profile, disabledProfile],
   allowedRoots: [root],
@@ -245,6 +284,25 @@ runtimes.get(first.id)!.release();
 await waitFor(() => getRecord(first.id).status === "idle");
 assert.equal(getRecord(first.id).providerSessionId, "thread_test");
 assert.match(getRecord(first.id).latestResponse ?? "", /Task:\nhold/);
+
+const agyDefault = unwrap(await manager.start({
+  target: "agy",
+  prompt: "default agy permissions",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+}));
+await waitFor(() => getRecord(agyDefault.id).status === "idle");
+assert.equal(agyRuntimes.get(agyDefault.id)?.inputs.at(-1)?.writeMode, "full_access");
+
+const agyExplicitAllowed = unwrap(await manager.start({
+  target: "agy",
+  prompt: "explicit agy permissions",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  writeMode: "allowed",
+}));
+await waitFor(() => getRecord(agyExplicitAllowed.id).status === "idle");
+assert.equal(agyRuntimes.get(agyExplicitAllowed.id)?.inputs.at(-1)?.writeMode, "allowed");
 
 currentSubagents = { ...subagents, enabled: false };
 const disabledAfterReload = await manager.start({

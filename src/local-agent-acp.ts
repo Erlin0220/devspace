@@ -28,7 +28,7 @@ import type {
   LocalAgentWriteMode,
 } from "./local-agent-runtime.js";
 
-export type AcpProvider = "cursor" | "copilot" | "grok";
+export type AcpProvider = "cursor" | "copilot" | "grok" | "qoder";
 
 const MAX_ACP_QUEUE_ITEMS = 10_000;
 const MAX_ACP_STDERR_BYTES = 32 * 1024;
@@ -44,6 +44,7 @@ const ACP_COMMANDS: Record<AcpProvider, [string, ...string[]]> = {
   cursor: ["cursor-agent", "acp"],
   copilot: ["copilot", "--acp"],
   grok: ["grok", "agent", "stdio"],
+  qoder: ["qodercli", "--acp"],
 };
 
 interface AcpConnectionLike {
@@ -312,6 +313,10 @@ export class AcpRuntime implements LocalAgentRuntime {
       await this.configureGrokSession(sessionId, input, metadata, isNewSession);
       return;
     }
+    // Qoder's documented CLI model/effort flags are process-level. Keep ACP
+    // session configuration provider-neutral and launch a distinct runtime when
+    // those values change instead of depending on optional ACP config metadata.
+    if (this.provider === "qoder") return;
     const canConfigure = isNewSession || hasAcpConfigOptions(metadata);
     if (!canConfigure) {
       const requested = [
@@ -427,7 +432,10 @@ export class AcpLocalAgentDriver implements LocalAgentDriver {
   runtimeKey(context: LocalAgentRuntimeContext): string {
     const command = this.resolveCommand() ?? ACP_COMMANDS[this.provider][0];
     const writeMode = context.writeMode ?? "allowed";
-    return `acp:${this.provider}:${command}:${writeMode}:${resolve(context.workspaceRoot)}`;
+    const processConfig = this.provider === "qoder"
+      ? `:${context.model ?? ""}:${context.effort ?? ""}`
+      : "";
+    return `acp:${this.provider}:${command}:${writeMode}${processConfig}:${resolve(context.workspaceRoot)}`;
   }
 
   async createRuntime(context: LocalAgentRuntimeContext) {
@@ -615,7 +623,9 @@ export function resolveAcpCommand(
     ? env.CURSOR_COMMAND
     : provider === "copilot"
       ? env.COPILOT_COMMAND
-      : env.GROK_COMMAND;
+      : provider === "grok"
+        ? env.GROK_COMMAND
+        : env.QODER_COMMAND;
   const command = configured ?? ACP_COMMANDS[provider][0];
   if (command.includes("/") || command.includes("\\")) return executableExists(command) ? command : undefined;
   const path = env.PATH;
@@ -660,6 +670,14 @@ export function acpCommandArgs(
       ...(agentProfile ? ["--agent-profile", agentProfile] : []),
       ...(effort ? ["--reasoning-effort", effort] : []),
       "stdio",
+    ];
+  }
+  if (provider === "qoder") {
+    return [
+      "--acp",
+      "--cwd", resolve(context.workspaceRoot),
+      ...(context.model ? ["--model", context.model] : []),
+      ...(context.effort ? ["--reasoning-effort", context.effort] : []),
     ];
   }
   const sandboxArgs = writeMode === "full_access"

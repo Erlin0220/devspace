@@ -96,8 +96,14 @@ export function agyCommandArgs(input: LocalAgentRunInput): string[] {
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("--effort", input.effort);
   args.push("--mode", "accept-edits");
-  if (input.writeMode === "full_access") args.push("--dangerously-skip-permissions");
-  else args.push("--sandbox");
+  if (input.writeMode === "full_access") {
+    args.push("--dangerously-skip-permissions");
+  } else {
+    // AGY headless mode cannot surface interactive permission prompts back to
+    // DevSpace. Auto-approve AGY's tool prompts while keeping its terminal
+    // sandbox enabled so the default `allowed` mode remains workspace-bounded.
+    args.push("--sandbox", "--dangerously-skip-permissions");
+  }
   return args;
 }
 

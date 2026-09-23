@@ -37,6 +37,8 @@ export function checkLocalAgentProviderAvailability(
       return commandAvailability(provider, env.COPILOT_COMMAND ?? "copilot", env);
     case "grok":
       return commandAvailability(provider, env.GROK_COMMAND ?? "grok", env);
+    case "qoder":
+      return commandAvailability(provider, env.QODER_COMMAND ?? "qodercli", env);
     case "agy":
       return commandAvailability(provider, env.AGY_COMMAND ?? "agy", env);
   }

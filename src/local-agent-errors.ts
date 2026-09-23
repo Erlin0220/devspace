@@ -451,6 +451,7 @@ function displayProvider(provider: LocalAgentProvider): string {
     case "cursor": return "Cursor";
     case "copilot": return "Copilot";
     case "grok": return "Grok";
+    case "qoder": return "Qoder";
     case "agy": return "AGY";
   }
 }

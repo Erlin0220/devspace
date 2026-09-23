@@ -291,6 +291,26 @@ assert.deepEqual(acpCommandArgs("grok", {
 }, { GROK_AGENT_PROFILE: " /tmp/grok-coding-only.md " }), [
   "agent", "--agent-profile", "/tmp/grok-coding-only.md", "--reasoning-effort", "low", "stdio",
 ]);
+assert.deepEqual(acpCommandArgs("qoder", {
+  ...cachedContext,
+  provider: "qoder",
+  model: "Qwen3.8-Flash",
+  effort: "high",
+}), [
+  "--acp", "--cwd", resolvedProject, "--model", "Qwen3.8-Flash", "--reasoning-effort", "high",
+]);
+const qoderDriver = new AcpLocalAgentDriver("qoder", {}, () => "/usr/local/bin/qodercli");
+const qoderBaseContext = {
+  ...cachedContext,
+  provider: "qoder" as const,
+  model: "Qwen3.8-Flash",
+  effort: "high",
+};
+assert.notEqual(
+  qoderDriver.runtimeKey(qoderBaseContext),
+  qoderDriver.runtimeKey({ ...qoderBaseContext, model: "Qwen3.8-Max" }),
+  "Qoder ACP runtimes are process-configured and must not be reused across models",
+);
 assert.deepEqual(acpCommandArgs("copilot", cachedContext), [
   "--acp", "--experimental", "--sandbox", "--allow-all-tools", "--add-dir", resolvedProject, "-C", resolvedProject,
 ]);

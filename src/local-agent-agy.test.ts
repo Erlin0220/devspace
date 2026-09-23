@@ -53,6 +53,7 @@ assert.deepEqual(
     "--effort", "high",
     "--mode", "accept-edits",
     "--sandbox",
+    "--dangerously-skip-permissions",
   ],
 );
 

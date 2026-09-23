@@ -45,6 +45,7 @@ export function createLocalAgentDrivers(
     new AcpLocalAgentDriver("cursor", options.env),
     new AcpLocalAgentDriver("copilot", options.env),
     new AcpLocalAgentDriver("grok", options.env),
+    new AcpLocalAgentDriver("qoder", options.env),
     new AgyLocalAgentDriver(options.env),
   ];
 }
@@ -61,6 +62,7 @@ export function createLocalAgentAdapter(
     case "cursor":
     case "copilot":
     case "grok":
+    case "qoder":
       return new AcpLocalAgentDriver(provider, options.env);
     case "agy": return new AgyLocalAgentDriver(options.env);
   }
