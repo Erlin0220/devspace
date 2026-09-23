@@ -12,6 +12,7 @@ import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
 import { LocalAgentStore } from "./local-agent-store.js";
 
 const config = loadConfig();
+const resolveSubagentsConfig = () => loadConfig().subagents;
 const DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS = 10_000;
 const paths = localAgentDaemonPaths(config.stateDir);
 const log = (
@@ -24,11 +25,15 @@ const manager = new LocalAgentManager({
   store,
   drivers: createLocalAgentDrivers(),
   pool: new LocalAgentRuntimePool({ logger: log }),
-  loadProfiles: (workspaceRoot) => loadLocalAgentProfiles(config, workspaceRoot, { includeDisabled: true }),
+  loadProfiles: (workspaceRoot) => loadLocalAgentProfiles(
+    { ...config, subagents: resolveSubagentsConfig() },
+    workspaceRoot,
+    { includeDisabled: true },
+  ),
   agentDir: config.agentDir,
   allowedRoots: config.allowedRoots,
   logger: log,
-  subagents: config.subagents,
+  subagents: resolveSubagentsConfig,
 });
 const daemon = new LocalAgentDaemon({
   stateDir: paths.stateDir,

@@ -10,13 +10,29 @@ import { promisify } from 'node:util';
 
 const exec = promisify(execFile);
 const securedStateDirectories = new Set();
-const privateStateFiles = ['personal.json', 'auth.json', 'intent.json', 'install.json', 'install-attempt.json', 'install-queue.json',
-  'legacy-import.json', 'control-capability.json', 'upgrade-review.json', 'desktop-status.json'];
+export const PERSONAL_STATE_FILES = Object.freeze({
+  personal: 'personal.json',
+  auth: 'auth.json',
+  intent: 'intent.json',
+  install: 'install.json',
+  installAttempt: 'install-attempt.json',
+  installQueue: 'install-queue.json',
+  legacyImport: 'legacy-import.json',
+  controlCapability: 'control-capability.json',
+  upgradeReview: 'upgrade-review.json',
+  desktopStatus: 'desktop-status.json',
+});
+const privateStateFiles = Object.values(PERSONAL_STATE_FILES);
 const privateBackupFiles = ['config.json', 'auth.json', 'desktop.json'];
 let windowsSidPromise;
 
 export function stateHome(env = process.env) {
   return resolve(env.PERSONAL_DEVSPACE_HOME ?? join(homedir(), '.devspace-personal'));
+}
+export function statePath(home, record) {
+  const file = PERSONAL_STATE_FILES[record];
+  if (!file) throw new Error(`Unknown Personal state record: ${record}`);
+  return join(home, file);
 }
 export async function privateDirectory(path) {
   await mkdir(path, { recursive: true, mode: 0o700 });

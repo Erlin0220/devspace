@@ -126,6 +126,52 @@ test("open_workspace refreshes provider availability for each catalog", async (t
   assert.match(String(usable.instruction ?? ""), /Local subagent recovery is available in this workspace/i);
 });
 
+test("open_workspace refreshes subagent model and effort configuration without recreating the server", async (t) => {
+  let subagents: SubagentsConfig = {
+    enabled: true,
+    providers: [{ id: "codex", enabled: true, model: "gpt-old", effort: "medium" }],
+  };
+  const context = await fixture(t, {
+    localAgentProviders: [{ name: "codex", available: true }],
+    subagents: () => subagents,
+  });
+
+  const before = structuredContent(await callOpen(context.client, context.project, "chat-before"));
+  assert.equal((before.agentProviders as Array<Record<string, unknown>>)[0]?.model, "gpt-old");
+  assert.equal((before.agentProviders as Array<Record<string, unknown>>)[0]?.effort, "medium");
+  assert.equal((before.agents as Array<Record<string, unknown>>)[0]?.model, "gpt-old");
+
+  subagents = {
+    enabled: true,
+    providers: [{ id: "codex", enabled: true, model: "gpt-new", effort: "high" }],
+  };
+  const after = structuredContent(await callOpen(context.client, context.project, "chat-after"));
+  assert.equal((after.agentProviders as Array<Record<string, unknown>>)[0]?.model, "gpt-new");
+  assert.equal((after.agentProviders as Array<Record<string, unknown>>)[0]?.effort, "high");
+  assert.equal((after.agents as Array<Record<string, unknown>>)[0]?.model, "gpt-new");
+});
+
+test("open_workspace can enable subagents dynamically without recreating the server", async (t) => {
+  let subagents: SubagentsConfig = {
+    enabled: false,
+    providers: [{ id: "codex", enabled: true, model: "gpt-dynamic", effort: "high" }],
+  };
+  const context = await fixture(t, {
+    localAgentProviders: [{ name: "codex", available: true }],
+    subagents: () => subagents,
+  });
+
+  const before = structuredContent(await callOpen(context.client, context.project, "chat-before-enable"));
+  assert.deepEqual(before.agentProviders, []);
+  assert.deepEqual(before.agents, []);
+
+  subagents = { ...subagents, enabled: true };
+  const after = structuredContent(await callOpen(context.client, context.project, "chat-after-enable"));
+  assert.equal((after.agentProviders as Array<Record<string, unknown>>)[0]?.id, "codex");
+  assert.equal((after.agentProviders as Array<Record<string, unknown>>)[0]?.model, "gpt-dynamic");
+  assert.equal((after.agents as Array<Record<string, unknown>>)[0]?.name, "reviewer");
+});
+
 test("open_workspace omits providers disabled by configuration", async (t) => {
   const context = await fixture(t, {
     localAgentProviders: [
@@ -270,7 +316,7 @@ async function fixture(
   options: {
     git?: boolean;
     localAgentProviders?: LocalAgentProviderAvailability[] | (() => LocalAgentProviderAvailability[]);
-    subagents?: SubagentsConfig;
+    subagents?: SubagentsConfig | (() => SubagentsConfig);
   } = {},
 ): Promise<ServerFixture> {
   const root = await mkdtemp(join(tmpdir(), "devspace-server-test-"));
@@ -303,6 +349,9 @@ async function fixture(
   const initialProviderAvailability = typeof options.localAgentProviders === "function"
     ? options.localAgentProviders()
     : options.localAgentProviders ?? [];
+  const initialSubagents = typeof options.subagents === "function"
+    ? options.subagents()
+    : options.subagents;
   const loadedConfig = loadConfig({
     DEVSPACE_CONFIG_DIR: join(root, ".config"),
     DEVSPACE_ALLOWED_ROOTS: root,
@@ -317,7 +366,7 @@ async function fixture(
   const config: ServerConfig = options.localAgentProviders
     ? {
         ...loadedConfig,
-        subagents: options.subagents ?? {
+        subagents: initialSubagents ?? {
           enabled: true,
           providers: initialProviderAvailability.map((provider) => ({
             id: provider.name,
@@ -330,12 +379,15 @@ async function fixture(
     typeof options.localAgentProviders === "function"
       ? options.localAgentProviders
       : () => initialProviderAvailability;
+  const resolveSubagentsConfig = typeof options.subagents === "function"
+    ? options.subagents
+    : () => config.subagents;
   const resolveLocalAgentProviders = () => buildLocalAgentProviderStatuses(
-    config.subagents,
+    resolveSubagentsConfig(),
     resolveProviderAvailability(),
   );
   const store = new SqliteWorkspaceStore(stateDir);
-  const workspaces = new WorkspaceRegistry(config, store);
+  const workspaces = new WorkspaceRegistry(config, store, { resolveSubagentsConfig });
   const server = createMcpServer(
     config,
     workspaces,
@@ -343,6 +395,8 @@ async function fixture(
     new ProcessSessionManager(),
     resolveLocalAgentProviders,
     [],
+    "",
+    resolveSubagentsConfig,
   );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const client = new Client({ name: "devspace-test-client", version: "1.0.0" });

@@ -64,6 +64,7 @@ import {
   formatLocalAgentProviderStatusSummary,
   type LocalAgentProviderStatus,
 } from "./local-agent-catalog.js";
+import type { SubagentsConfig } from "./local-agent-config.js";
 
 type Transport = StreamableHTTPServerTransport;
 // MCP clients can reconnect without closing the previous transport. Bound stale
@@ -739,6 +740,7 @@ export function createMcpServer(
   resolveLocalAgentProviders: () => LocalAgentProviderStatus[],
   incomingArtifactAdapters: readonly IncomingArtifactAdapter[],
   commandRecoveryInstruction = "",
+  resolveSubagentsConfig: () => SubagentsConfig = () => config.subagents,
 ): McpServer {
   const server = new McpServer(
     {
@@ -860,7 +862,7 @@ export function createMcpServer(
           path: formatPathForPrompt(skill.filePath),
         }));
       const agentCatalog = buildLocalAgentCatalog(
-        config.subagents,
+        resolveSubagentsConfig(),
         workspace.agentProfiles,
         resolveLocalAgentProviders(),
       );
@@ -1716,6 +1718,7 @@ export interface CreateServerOptions {
   createEventStore?: () => import("@modelcontextprotocol/sdk/server/streamableHttp.js").EventStore & { close(): void };
   mcpSessionRetention?: { idleTimeoutMs: number; cleanupIntervalMs: number };
   commandRecoveryInstruction?: string;
+  resolveSubagentsConfig?: () => SubagentsConfig;
 }
 
 export function createServer(
@@ -1751,16 +1754,17 @@ export function createServer(
     requiredScopes: [config.oauth.scopes[0] ?? "devspace"],
     resourceMetadataUrl: getOAuthProtectedResourceMetadataUrl(resourceServerUrl),
   });
+  const resolveSubagentsConfig = options.resolveSubagentsConfig ?? (() => config.subagents);
   const workspaceStore = createWorkspaceStore(config.stateDir);
-  const workspaces = new WorkspaceRegistry(config, workspaceStore);
+  const workspaces = new WorkspaceRegistry(config, workspaceStore, { resolveSubagentsConfig });
   const reviewCheckpoints = createReviewCheckpointManager();
   const processSessions = new ProcessSessionManager();
   const localAgentProviders = buildLocalAgentProviderStatuses(
-    config.subagents,
+    resolveSubagentsConfig(),
     getLocalAgentProviderAvailabilitySnapshot(),
   );
   const resolveLocalAgentProviders = () => buildLocalAgentProviderStatuses(
-    config.subagents,
+    resolveSubagentsConfig(),
     getLocalAgentProviderAvailabilitySnapshot(),
   );
 
@@ -1928,6 +1932,7 @@ export function createServer(
           resolveLocalAgentProviders,
           incomingArtifactAdapters,
           options.commandRecoveryInstruction,
+          resolveSubagentsConfig,
         );
         options.registerTools?.(server, workspaces);
         await server.connect(transport);

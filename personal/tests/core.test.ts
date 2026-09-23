@@ -143,6 +143,19 @@ test('native subagent tools bridge the existing agent runtime without MCP App me
   const listed = await client.callTool({ name: 'list_agents', arguments: { workspaceId: workspace.id } });
   assert.deepEqual(listed.structuredContent, { agents: [{ id: 'agt_test', status: 'completed', target: 'codex-explorer' }] });
   assert.deepEqual(calls, ['start:codex-explorer', 'get:agt_test', 'continue:agt_test', 'list']);
+
+  const disabledConfig = { ...config, subagents: { ...config.subagents, enabled: false } };
+  const disabledServer = new McpServer({ name: 'subagent-disabled-test', version: '1' });
+  new PersonalSubagents(disabledConfig, {
+    start: async () => Result.ok(baseRecord), get: async () => Result.ok(baseRecord),
+    continue: async () => Result.ok(baseRecord), list: async () => Result.ok([]),
+  }).register(disabledServer, new WorkspaceRegistry(disabledConfig));
+  const [disabledClientTransport, disabledServerTransport] = InMemoryTransport.createLinkedPair();
+  const disabledClient = new Client({ name: 'subagent-disabled-client', version: '1' });
+  await Promise.all([disabledClient.connect(disabledClientTransport), disabledServer.connect(disabledServerTransport)]);
+  t.after(async () => { await disabledClient.close(); await disabledServer.close(); });
+  const disabledTools = (await disabledClient.listTools()).tools.map(tool => tool.name);
+  for (const name of ['run_agent', 'get_agent', 'continue_agent', 'list_agents']) assert.ok(disabledTools.includes(name));
 });
 
 test('run_agent retries one cold daemon startup failure but no other failure', async t => {

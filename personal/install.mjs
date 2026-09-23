@@ -3,17 +3,18 @@ import { mkdir, copyFile, rename, access, rm } from 'node:fs/promises';
 import { dirname, join, resolve, isAbsolute } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { atomicJson, readJson, secureStateDirectory, stateHome } from './state.mjs';
+import { atomicJson, readJson, secureStateDirectory, stateHome, statePath } from './state.mjs';
 import { inspectCandidate, payloadDigest, verifyCandidate } from './artifact.mjs';
 import { readPersonalAuth, readPersonalConfig } from './config.mjs';
-import { installerRunning, jobRunning, jobAction, registerDesktopEntries, registerJobs, ownerId } from './desktop/platform.mjs';
+import { installerRunning, jobRunning, jobAction, registerDesktopEntries, registerJobs } from './desktop/platform.mjs';
+import { runtimeSnapshot, stopIdleAgentDaemon, waitForRuntime } from './runtime.mjs';
 import { runNpmCommand } from './verification.mjs';
 import { legacyTasksAction } from './legacy-import.mjs';
 
 const installerRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const terminalInstallStates = new Set(['installed', 'failed']);
-const attemptPath = home => join(home, 'install-attempt.json');
-const queuePath = home => join(home, 'install-queue.json');
+const attemptPath = home => statePath(home, 'installAttempt');
+const queuePath = home => statePath(home, 'installQueue');
 async function report(home, requestId, value) {
   // Progress is optional; its failure must not roll back a healthy installed runtime.
   try {
@@ -81,24 +82,20 @@ async function stopOwn(home) {
   const results = await Promise.allSettled(['runtime', 'desktop'].map(component => jobAction(home, component, 'stop')));
   const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
   if (failures.length) throw new AggregateError(failures, 'One or more Personal process owners did not stop');
-  for (let i = 0; i < 40; i++) {
-    if (!await runtimeProbe(home)) return;
-    await sleep(100);
-  }
-  throw new Error('Personal process owners stopped but the Runtime health endpoint is still responding');
-}
-async function runtimeProbe(home) {
-  const { runtimeSettings } = await import('./runtime.mjs'); const { config } = await runtimeSettings(home);
-  return fetch(`http://127.0.0.1:${config.port}/personal-healthz`, { signal: AbortSignal.timeout(1000) })
-    .then(response => response.ok ? response.json() : null).catch(() => null);
+  await waitForRuntime(home, snapshot => !snapshot.responding, {
+    attempts: 40,
+    intervalMs: 100,
+    errorMessage: 'Personal process owners stopped but the Runtime health endpoint is still responding',
+  });
 }
 async function ready(home, version, commit) {
-  for (let i = 0; i < 80; i++) {
-    const health = await runtimeProbe(home);
-    if (health?.owner === ownerId(home) && health.version === version && health.overlayCommit === commit) return;
-    await sleep(250);
-  }
-  throw new Error('Candidate did not become healthy within the readiness window');
+  await waitForRuntime(home, snapshot => (
+    snapshot.owned && snapshot.runtimeVersion === version && snapshot.overlayCommit === commit
+  ), {
+    attempts: 80,
+    intervalMs: 250,
+    errorMessage: 'Candidate did not become healthy within the readiness window',
+  });
 }
 export async function installPersonal(source, home = stateHome(), { requestId, expectedCandidateHead } = {}) {
   await secureStateDirectory(home);
@@ -107,17 +104,16 @@ export async function installPersonal(source, home = stateHome(), { requestId, e
     throw new Error('Candidate revision changed after the installation request was approved');
   }
   const stable = manifest.upstream;
-  const previous = await readJson(join(home, 'install.json'), null);
+  const previous = await readJson(statePath(home, 'install'), null);
   const config = await readPersonalConfig(home);
   if (!(await readPersonalAuth(home, {})).apiToken) throw new Error('Migrate or configure the private Personal API Token before installing');
   // Recheck after staging as well: testing/download time may overlap a new command.
   const idle = async () => {
-    const probe = await runtimeProbe(home);
-    if (probe?.owner === ownerId(home) && probe.runningProcesses > 0) throw new Error('Runtime has active commands; installation was not started');
-    const agentd = await (await import('./runtime.mjs')).agentDaemonStatus(home);
-    if (agentd.activeTurns > 0) throw new Error('Runtime has active subagent turns; installation was not started');
-    if (agentd.activeTurns === null) throw new Error('Subagent activity could not be verified; installation was not started');
-    if (previous && probe?.owner !== ownerId(home) && await jobRunning(home, 'runtime')) throw new Error('Running runtime did not provide a trustworthy idle status; refusing an installation switch');
+    const snapshot = await runtimeSnapshot(home);
+    if (snapshot.owned && snapshot.runningProcesses > 0) throw new Error('Runtime has active commands; installation was not started');
+    if (snapshot.activeAgentTurns > 0) throw new Error('Runtime has active subagent turns; installation was not started');
+    if (snapshot.activeAgentTurns === null) throw new Error('Subagent activity could not be verified; installation was not started');
+    if (previous && !snapshot.owned && await jobRunning(home, 'runtime')) throw new Error('Running runtime did not provide a trustworthy idle status; refusing an installation switch');
   };
   await idle();
   if (requestId) await report(home, requestId, { status: 'staging', source, version: stable.version });
@@ -127,7 +123,7 @@ export async function installPersonal(source, home = stateHome(), { requestId, e
   const result = await activateCandidate({ paused: config.paused,
     stop: async () => {
       try {
-        await (await import('./runtime.mjs')).stopIdleAgentDaemon(home);
+        await stopIdleAgentDaemon(home);
         if (previous) await stopOwn(home); else await legacyTasksAction(home, 'stop');
       }
       catch (error) {
@@ -140,13 +136,13 @@ export async function installPersonal(source, home = stateHome(), { requestId, e
     select: () => registerJobs(home, destination, undefined, { record: false }),
     start: () => jobAction(home, 'runtime', 'start'),
     ready: () => ready(home, stable.version, manifest.candidateHead),
-    commit: () => atomicJson(join(home, 'install.json'), { schema: 1, owner: 'personal-devspace', packageRoot: destination }),
+    commit: () => atomicJson(statePath(home, 'install'), { schema: 1, owner: 'personal-devspace', packageRoot: destination }),
     restore: async () => {
       await stopOwn(home);
       if (previous) { await registerJobs(home, previous.packageRoot); if (!config.paused) await jobAction(home, 'runtime', 'start'); await jobAction(home, 'desktop', 'start'); }
       else {
         for (const component of ['runtime', 'desktop']) await jobAction(home, component, 'remove');
-        await rm(join(home, 'install.json'), { force: true }); await legacyTasksAction(home, 'restore');
+        await rm(statePath(home, 'install'), { force: true }); await legacyTasksAction(home, 'restore');
       }
     },
     desktop: async () => {
@@ -241,7 +237,7 @@ export async function runInstaller(home = stateHome()) {
 }
 
 async function reconcileStoppedAttempt(home, attempt) {
-  const installation = await readJson(join(home, 'install.json'), null).catch(() => null);
+  const installation = await readJson(statePath(home, 'install'), null).catch(() => null);
   const installed = installation?.packageRoot
     ? await readJson(join(installation.packageRoot, '.personal-install.json'), null).catch(() => null)
     : null;

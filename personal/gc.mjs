@@ -3,7 +3,7 @@ import { readdir, rm, stat } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { installerRunning } from './desktop/platform.mjs';
-import { readJson, stateHome } from './state.mjs';
+import { readJson, stateHome, statePath } from './state.mjs';
 
 const LOG_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const exec = promisify(execFile);
@@ -23,8 +23,8 @@ export async function collectGarbage(home = stateHome(), { dryRun = false, now =
   };
   if (await installerRunning(home)) return { skipped: 'installer-running', actions };
 
-  const installation = await readJson(join(home, 'install.json'), null).catch(() => null);
-  const attempt = await readJson(join(home, 'install-attempt.json'), null).catch(() => null);
+  const installation = await readJson(statePath(home, 'install'), null).catch(() => null);
+  const attempt = await readJson(statePath(home, 'installAttempt'), null).catch(() => null);
   const keepApps = new Set([installation?.packageRoot, attempt?.previous].filter(Boolean).map(path => resolve(path)));
   const apps = join(home, 'apps');
   for (const entry of await entries(apps)) {
@@ -60,7 +60,7 @@ export async function collectGarbage(home = stateHome(), { dryRun = false, now =
     if (info && now - info.mtimeMs > LOG_RETENTION_MS) await remove('expired-log', path, { force: true });
   }
 
-  const queue = join(home, 'install-queue.json');
+  const queue = statePath(home, 'installQueue');
   const queued = await readJson(queue, null).catch(() => null);
   if (queued) {
     const age = now - Date.parse(queued.createdAt ?? '');
@@ -77,8 +77,8 @@ export async function collectGarbage(home = stateHome(), { dryRun = false, now =
     await remove('retired-task-cache', startup);
   }
 
-  const personal = await readJson(join(home, 'personal.json'), null).catch(() => null);
-  const review = await readJson(join(home, 'upgrade-review.json'), null).catch(() => null);
+  const personal = await readJson(statePath(home, 'personal'), null).catch(() => null);
+  const review = await readJson(statePath(home, 'upgradeReview'), null).catch(() => null);
   const sourceRoot = personal?.sourceRoot;
   if (typeof sourceRoot === 'string') {
     const listing = await exec('git', ['worktree', 'list', '--porcelain'], {

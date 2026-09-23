@@ -64,7 +64,7 @@ export interface LocalAgentManagerOptions {
   agentDir?: string;
   allowedRoots?: readonly string[];
   logger?: LocalAgentManagerLogger;
-  subagents: SubagentsConfig;
+  subagents: SubagentsConfig | (() => SubagentsConfig);
 }
 
 export type AgentStartError = AgentTargetError | AgentScopeError | AgentConflictError | AgentStoreError;
@@ -85,7 +85,7 @@ export class LocalAgentManager {
   private readonly agentDir?: string;
   private readonly allowedRoots?: readonly string[];
   private readonly logger?: LocalAgentManagerLogger;
-  private readonly subagents: SubagentsConfig;
+  private readonly resolveSubagents: () => SubagentsConfig;
   private readonly activeTurns = new Map<string, Promise<void>>();
   private accepting = true;
   private closePromise?: Promise<void>;
@@ -98,7 +98,8 @@ export class LocalAgentManager {
     this.agentDir = options.agentDir;
     this.allowedRoots = options.allowedRoots;
     this.logger = options.logger;
-    this.subagents = options.subagents;
+    const subagents = options.subagents;
+    this.resolveSubagents = typeof subagents === "function" ? subagents : () => subagents;
   }
 
   reconcileActiveRuns(message?: string): BetterResult<number, AgentStoreError> {
@@ -115,12 +116,13 @@ export class LocalAgentManager {
         "start",
       );
       const profiles = yield* Result.await(manager.loadProfilesResult(workspaceRoot, input.target));
+      const subagents = manager.resolveSubagents();
       const target = resolveLocalAgentTarget(
         input.target,
         profiles,
         input.model,
         input.effort,
-        manager.subagents.providers,
+        subagents.providers,
       );
       if (!target) {
         return Result.err(new AgentTargetError({
@@ -139,7 +141,7 @@ export class LocalAgentManager {
           message: `Subagent profile is disabled: ${target.name}.`,
         }));
       }
-      yield* manager.providerEnabledResult(target.provider, target.name, "start");
+      yield* manager.providerEnabledResult(target.provider, target.name, "start", subagents);
       yield* manager.driverResult(target.provider, "start");
       const record = yield* manager.store.createResult({
         workspaceId: input.workspaceId,
@@ -171,7 +173,12 @@ export class LocalAgentManager {
       yield* manager.agentWorkspaceResult(record, scope, "continue");
       const profiles = yield* Result.await(manager.loadProfilesResult(record.workspaceRoot, record.profileName));
       yield* manager.profileForRecordResult(record, profiles);
-      yield* manager.providerEnabledResult(record.provider, record.profileName, "continue");
+      yield* manager.providerEnabledResult(
+        record.provider,
+        record.profileName,
+        "continue",
+        manager.resolveSubagents(),
+      );
       yield* manager.driverResult(record.provider, "continue", agentId);
       return manager.begin(record, prompt, overrides, scope.workspaceId);
     });
@@ -489,9 +496,10 @@ export class LocalAgentManager {
     provider: string,
     target: string,
     operation: string,
+    subagents: SubagentsConfig,
   ): BetterResult<void, AgentTargetError> {
     if (!isLocalAgentProvider(provider)) return Result.ok(undefined);
-    if (isSubagentProviderEnabled(this.subagents, provider)) return Result.ok(undefined);
+    if (isSubagentProviderEnabled(subagents, provider)) return Result.ok(undefined);
     return Result.err(new AgentTargetError({
       code: "PROVIDER_DISABLED",
       target,

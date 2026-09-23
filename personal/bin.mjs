@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-import { resolve, join } from 'node:path';
+import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { readJson, stateHome } from './state.mjs';
+import { readJson, stateHome, statePath } from './state.mjs';
 import { jobAction, openBrowser } from './desktop/platform.mjs';
 import { operations } from './desktop/main.mjs';
 
@@ -34,7 +34,7 @@ try {
     const { setTimeout: sleep } = await import('node:timers/promises');
     let opened = false;
     for (let i = 0; i < 30; i++) {
-      const credential = await readJson(join(home, 'control-capability.json'), null).catch(() => null);
+      const credential = await readJson(statePath(home, 'controlCapability'), null).catch(() => null);
       if (credential?.port && /^[A-Za-z0-9_-]{43}$/.test(credential.token ?? '')) {
         const origin = `http://127.0.0.1:${credential.port}`;
         const ready = await fetch(`${origin}/api/state`, { headers: { Authorization: `Bearer ${credential.token}` }, signal: AbortSignal.timeout(1000) }).then(response => response.ok, () => false);

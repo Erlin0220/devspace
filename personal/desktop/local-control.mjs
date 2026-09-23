@@ -4,7 +4,7 @@ import { randomInt, randomUUID, timingSafeEqual } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { atomicJson, randomSecret, readJson, secureStateDirectory, stateHome } from '../state.mjs';
+import { atomicJson, randomSecret, readJson, secureStateDirectory, stateHome, statePath } from '../state.mjs';
 
 export const PREFERRED_PORT = 53683;
 const validPort = value => Number.isInteger(value) && value >= 49152 && value <= 65535;
@@ -36,7 +36,7 @@ const validCapability = value => value?.schema === 1 && /^[A-Za-z0-9_-]{43}$/.te
 export async function startLocalControl(controller, { home = stateHome(), preferredPort = PREFERRED_PORT, retryAttempts = 12, retryDelayMs = 250,
   chooseFallbackPort = () => randomInt(49152, 65536), openBrowser = async () => {} } = {}) {
   await secureStateDirectory(home);
-  const path = join(home, 'control-capability.json');
+  const path = statePath(home, 'controlCapability');
   let credential = await readJson(path, null);
   if (credential === null) {
     await atomicJson(path, { schema: 1, token: randomSecret() }, { createOnly: true });

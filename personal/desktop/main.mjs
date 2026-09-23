@@ -4,23 +4,22 @@ import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
-import { atomicJson, readJson, stateHome } from '../state.mjs';
-import { approvedProjectRoot, readPersonalConfig } from '../config.mjs';
-import { agentDaemonStatus, runtimeSettings } from '../runtime.mjs';
+import { atomicJson, readJson, stateHome, statePath } from '../state.mjs';
+import { approvedProjectRoot, readPersonalAuth, readPersonalConfig } from '../config.mjs';
+import { runtimeSnapshot, waitForRuntime } from '../runtime.mjs';
 import { discoverStable, prepareStable } from '../upgrade.mjs';
 import { createDesktopController } from './controller.mjs';
 import { startLocalControl } from './local-control.mjs';
-import { chooseFolder, installRecord, jobAction, jobStatus, openBrowser, openLogs, ownerId, registerDesktopEntries, registerJobs, serviceComponents } from './platform.mjs';
+import { chooseFolder, installRecord, jobAction, jobStatus, openBrowser, openLogs, registerDesktopEntries, registerJobs, serviceComponents } from './platform.mjs';
 import semver from 'semver';
-import { setTimeout as sleep } from 'node:timers/promises';
 
 const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
 const baseline = JSON.parse(await readFile(new URL('../upstream.json', import.meta.url), 'utf8'));
 async function candidateStatus(home) {
-  const review = await readJson(join(home, 'upgrade-review.json'), null).catch(() => null);
+  const review = await readJson(statePath(home, 'upgradeReview'), null).catch(() => null);
   if (!review?.candidate || !review.candidateHead) return review;
   const manifest = await readJson(join(review.candidate, '.personal-review', 'candidate.json'), null).catch(() => null);
-  const attempt = await readJson(join(home, 'install-attempt.json'), null).catch(() => null);
+  const attempt = await readJson(statePath(home, 'installAttempt'), null).catch(() => null);
   const applied = attempt?.status === 'installed' && attempt.candidateHead === review.candidateHead;
   return { ...review,
     status: applied ? 'applied' : review.status,
@@ -30,19 +29,17 @@ async function candidateStatus(home) {
     tests: manifest?.stages };
 }
 export async function status(home = stateHome()) {
-  const { config, personal, auth } = await runtimeSettings(home);
-  const origin = `http://127.0.0.1:${config.port}`;
-  const probe = await fetch(`${origin}/personal-healthz`, { signal: AbortSignal.timeout(2000) }).then(async response => response.ok ? response.json() : null).catch(() => null);
-  const agentd = await agentDaemonStatus(home, config).catch(error => ({ activeTurns: null, runtimeCount: null, error: error.message }));
-  return { running: probe?.name === 'personal-devspace' && probe.owner === ownerId(home), paused: personal.paused,
+  const [runtime, auth] = await Promise.all([runtimeSnapshot(home), readPersonalAuth(home)]);
+  const { config, personal } = runtime;
+  return { running: runtime.running, paused: personal.paused,
     version: baseline.version, projectRoot: personal.projectRoot ?? (config.allowedRoots.length === 1 ? config.allowedRoots[0] : undefined),
-    allowedRoots: config.allowedRoots, endpoint: `${origin}/mcp`,
+    allowedRoots: config.allowedRoots, endpoint: `${runtime.origin}/mcp`,
     apiTokenConfigured: Boolean(auth.apiToken), codegraphEnabled: personal.codegraph?.enabled === true,
-    runningProcesses: probe?.owner === ownerId(home) ? probe.runningProcesses ?? 0 : 0,
-    activeAgentTurns: agentd.activeTurns, agentRuntimeCount: agentd.runtimeCount, agentStatusError: agentd.error,
-    overlayCommit: probe?.owner === ownerId(home) ? probe.overlayCommit : undefined,
+    runningProcesses: runtime.runningProcesses,
+    activeAgentTurns: runtime.activeAgentTurns, agentRuntimeCount: runtime.agentRuntimeCount, agentStatusError: runtime.agentStatusError,
+    overlayCommit: runtime.overlayCommit,
     candidate: await candidateStatus(home),
-    installation: await readJson(join(home, 'install-attempt.json'), null).catch(() => null) };
+    installation: await readJson(statePath(home, 'installAttempt'), null).catch(() => null) };
 }
 async function requireIdle(home) {
   const snapshot = await status(home);
@@ -52,13 +49,19 @@ async function requireIdle(home) {
 }
 async function startReady(home) {
   await jobAction(home, 'runtime', 'start');
-  for (let i = 0; i < 60; i++) { if ((await status(home)).running) return; await sleep(250); }
-  throw new Error('Runtime 未能启动，请查看诊断日志');
+  await waitForRuntime(home, snapshot => snapshot.running, {
+    attempts: 60,
+    intervalMs: 250,
+    errorMessage: 'Runtime 未能启动，请查看诊断日志',
+  });
 }
 async function stopReady(home) {
   await jobAction(home, 'runtime', 'stop');
-  for (let i = 0; i < 40; i++) { if (!(await status(home)).running) return; await sleep(100); }
-  throw new Error('Runtime owner stopped but the health endpoint is still responding');
+  await waitForRuntime(home, snapshot => !snapshot.running, {
+    attempts: 40,
+    intervalMs: 100,
+    errorMessage: 'Runtime owner stopped but the health endpoint is still responding',
+  });
 }
 export function operations(home = stateHome()) {
   return {
@@ -73,11 +76,11 @@ export function operations(home = stateHome()) {
       const failures = results.flatMap(result => result.status === 'rejected' ? [result.reason] : []);
       if (failures.length) throw new AggregateError(failures, 'Some Personal services could not be stopped');
     },
-    suspend: async () => { await requireIdle(home); await atomicJson(join(home, 'intent.json'), { paused: true }); await stopReady(home); },
+    suspend: async () => { await requireIdle(home); await atomicJson(statePath(home, 'intent'), { paused: true }); await stopReady(home); },
     resume: async () => {
-      await atomicJson(join(home, 'intent.json'), { paused: false });
+      await atomicJson(statePath(home, 'intent'), { paused: false });
       try { await startReady(home); }
-      catch (error) { await atomicJson(join(home, 'intent.json'), { paused: true }); throw error; }
+      catch (error) { await atomicJson(statePath(home, 'intent'), { paused: true }); throw error; }
     },
     restart: async () => { await requireIdle(home); await stopReady(home); if (!(await readPersonalConfig(home)).paused) await startReady(home); },
     repair: async () => {
@@ -90,13 +93,13 @@ export function operations(home = stateHome()) {
     },
     'project-root': async ({ projectRoot }) => {
       const root = await approvedProjectRoot(projectRoot);
-      const before = await readJson(join(home, 'personal.json'), { schema: 1 });
+      const before = await readJson(statePath(home, 'personal'), { schema: 1 });
       if (before.projectRoot === root) return;
       const paused = (await readPersonalConfig(home)).paused;
       await requireIdle(home);
       await stopReady(home);
-      try { await atomicJson(join(home, 'personal.json'), { ...before, projectRoot: root }); if (!paused) await startReady(home); }
-      catch (error) { await stopReady(home).catch(() => {}); await atomicJson(join(home, 'personal.json'), before); if (!paused) await startReady(home); throw error; }
+      try { await atomicJson(statePath(home, 'personal'), { ...before, projectRoot: root }); if (!paused) await startReady(home); }
+      catch (error) { await stopReady(home).catch(() => {}); await atomicJson(statePath(home, 'personal'), before); if (!paused) await startReady(home); throw error; }
     },
     'choose-folder': async input => chooseFolder({ ...input, projectRoot: (await status(home)).projectRoot }),
     logs: () => openLogs(home),
@@ -106,9 +109,9 @@ export function operations(home = stateHome()) {
         upstream: baseline,
         runtime: await safe(() => status(home)),
         jobs: Object.fromEntries(await Promise.all(['runtime', 'desktop', 'installer'].map(async component => [component, await safe(() => jobStatus(home, component))]))),
-        install: await readJson(join(home, 'install.json'), null).catch(error => ({ error: error.message })),
-        attempt: await readJson(join(home, 'install-attempt.json'), null).catch(error => ({ error: error.message })),
-        desktop: await readJson(join(home, 'desktop-status.json'), null).catch(error => ({ error: error.message })) };
+        install: await readJson(statePath(home, 'install'), null).catch(error => ({ error: error.message })),
+        attempt: await readJson(statePath(home, 'installAttempt'), null).catch(error => ({ error: error.message })),
+        desktop: await readJson(statePath(home, 'desktopStatus'), null).catch(error => ({ error: error.message })) };
     },
     'update-check': async ({ signal }) => { const release = await discoverStable({ signal }); return { ...release, available: semver.gt(release.version, baseline.version) }; },
     'update-prepare': async ({ onProgress }) => {
@@ -116,29 +119,29 @@ export function operations(home = stateHome()) {
       const result = await prepareStable({ root: personal.sourceRoot ?? packageRoot, onProgress });
       const review = { schema: 1, status: 'tested-awaiting-review', candidate: result.candidate, candidateHead: result.candidateHead,
         preparedAt: new Date().toISOString() };
-      await atomicJson(join(home, 'upgrade-review.json'), review);
+      await atomicJson(statePath(home, 'upgradeReview'), review);
       return { ...review, version: result.version, branch: result.branch, tests: result.tests };
     },
     'update-apply': async () => {
       await requireIdle(home);
-      const candidate = await readJson(join(home, 'upgrade-review.json'));
+      const candidate = await readJson(statePath(home, 'upgradeReview'));
       if (candidate?.status !== 'tested-awaiting-review' || !candidate.candidate) throw new Error('没有经过完整验证的升级候选');
       const approved = { ...candidate, approvedCandidateHead: candidate.candidateHead, approvedAt: new Date().toISOString() };
-      await atomicJson(join(home, 'upgrade-review.json'), approved);
+      await atomicJson(statePath(home, 'upgradeReview'), approved);
       try {
         const result = await (await import('../install.mjs')).requestInstallAndWait(candidate.candidate, home,
           { expectedCandidateHead: candidate.candidateHead });
-        await atomicJson(join(home, 'upgrade-review.json'), { ...approved, status: 'applied', appliedAt: new Date().toISOString(),
+        await atomicJson(statePath(home, 'upgradeReview'), { ...approved, status: 'applied', appliedAt: new Date().toISOString(),
           requestId: result.requestId });
         return result;
       } catch (error) {
-        await atomicJson(join(home, 'upgrade-review.json'), { ...approved, lastInstallError: error.message, lastInstallAt: new Date().toISOString() }).catch(() => {});
+        await atomicJson(statePath(home, 'upgradeReview'), { ...approved, lastInstallError: error.message, lastInstallAt: new Date().toISOString() }).catch(() => {});
         throw error;
       }
     },
     exit: async () => {
       await requireIdle(home);
-      await atomicJson(join(home, 'intent.json'), { paused: true });
+      await atomicJson(statePath(home, 'intent'), { paused: true });
       // Let the desktop owner exit itself after the core stop has settled.
       await stopReady(home);
     },
@@ -158,7 +161,7 @@ export async function startDesktop(home = stateHome(), { nativePath, onEvidence 
   const controller = createDesktopController(desktopOperations);
   const warnings = {};
   let control, tray, unsubscribe, retry, closing = false, attempts = 0;
-  const report = () => atomicJson(join(home, 'desktop-status.json'), { schema: 1, pid: process.pid,
+  const report = () => atomicJson(statePath(home, 'desktopStatus'), { schema: 1, pid: process.pid,
     control: Boolean(control), tray: Boolean(tray), warnings, updatedAt: new Date().toISOString() }).catch(() => {});
   const open = async () => {
     if (!control) control = await startLocalControl(controller, { home, openBrowser });

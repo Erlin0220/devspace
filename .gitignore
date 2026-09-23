@@ -7,5 +7,6 @@ native-build.log
 node_modules/
 dist/
 releases/
+/data/
 .env
 *.log

@@ -59,13 +59,6 @@ export class PersonalSubagents {
   }
 
   register(server: McpServer, workspaces: WorkspaceRegistry): void {
-    if (
-      !this.config.subagents.enabled
-      || !this.config.subagents.providers.some((provider) => provider.enabled)
-    ) {
-      return;
-    }
-
     server.registerTool(
       "run_agent",
       {

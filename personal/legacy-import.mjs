@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 import { access } from 'node:fs/promises';
-import { atomicJson, readJson, secureStateDirectory, stateHome } from './state.mjs';
+import { atomicJson, readJson, secureStateDirectory, stateHome, statePath } from './state.mjs';
 import { runWindowsDesktop } from './desktop/platform.mjs';
 import { repositoryRoot } from './upgrade.mjs';
 
@@ -40,7 +40,7 @@ $result|ConvertTo-Json -Depth 5 -Compress
   return JSON.parse(await runWindowsDesktop(script, { env: { PERSONAL_LEGACY_ID: identity, PERSONAL_LEGACY_LAUNCHER: join(legacyDir, 'desktop/bin/devspace-launcher.exe') } }));
 }
 export async function legacyTasksAction(home = stateHome(), action) {
-  const legacy = await readJson(join(home, 'legacy-import.json'), null);
+  const legacy = await readJson(statePath(home, 'legacyImport'), null);
   if (!legacy?.complete || !legacy.tasks?.length || process.platform !== 'win32') return;
   for (const task of legacy.tasks) {
     if (!/^com\.devspace\.[a-f0-9]{16}\.(runtime|tray)$/.test(task.name) || !isAbsolute(task.executable)) {
@@ -64,7 +64,7 @@ elseif($env:PERSONAL_OLD_ACTION -eq 'restore') { Enable-ScheduledTask -TaskName 
 }
 export async function importLegacy(home = stateHome(), { legacyDir = process.env.DEVSPACE_CONFIG_DIR ?? join(homedir(), '.devspace'), sourceRoot = repositoryRoot, desktop } = {}) {
   await secureStateDirectory(home);
-  const markerPath = join(home, 'legacy-import.json');
+  const markerPath = statePath(home, 'legacyImport');
   const previous = await readJson(markerPath, null);
   if (previous?.complete) return { unchanged: true };
   const backup = previous?.backup ?? join(home, 'legacy-backup');
@@ -76,7 +76,7 @@ export async function importLegacy(home = stateHome(), { legacyDir = process.env
       readJson(join(backup, 'desktop.json')),
     ]);
   } else {
-    const existing = await readJson(join(home, 'personal.json'), null);
+    const existing = await readJson(statePath(home, 'personal'), null);
     if (existing) throw new Error('Personal settings already exist; refusing to overwrite them during historical import');
     config = await readJson(join(legacyDir, 'config.json'));
     auth = await readJson(join(legacyDir, 'auth.json'));
@@ -88,7 +88,7 @@ export async function importLegacy(home = stateHome(), { legacyDir = process.env
     await atomicJson(markerPath, { schema: 1, complete: false, phase: 'backed-up', backup,
       legacyDir: resolve(legacyDir), sourceRoot: resolve(sourceRoot), updatedAt: new Date().toISOString() });
   }
-  const previousAuth = await readJson(join(home, 'auth.json'), null);
+  const previousAuth = await readJson(statePath(home, 'auth'), null);
   const environment = { ...process.env, ...launch.environment };
   const apiToken = previousAuth?.apiToken ?? environment.DEVSPACE_API_TOKEN;
   if (typeof apiToken !== 'string' || !/^[\x21-\x7e]{32,4096}$/.test(apiToken)) throw new Error('Existing API token could not be identified safely; no configuration was changed');
@@ -96,8 +96,8 @@ export async function importLegacy(home = stateHome(), { legacyDir = process.env
   const personal = { schema: 1, runtimeConfigDir: resolve(legacyDir), sourceRoot: resolve(sourceRoot),
     codegraph: { enabled: config.codegraphEnabled === true } };
   try {
-    await atomicJson(join(home, 'auth.json'), { apiToken });
-    await atomicJson(join(home, 'personal.json'), personal);
+    await atomicJson(statePath(home, 'auth'), { apiToken });
+    await atomicJson(statePath(home, 'personal'), personal);
     await atomicJson(markerPath, { schema: 1, complete: false, phase: 'personal-written', backup,
       legacyDir: resolve(legacyDir), sourceRoot: resolve(sourceRoot), updatedAt: new Date().toISOString() });
     await atomicJson(join(legacyDir, 'config.json'), withoutRetired(config, retiredConfigKeys));

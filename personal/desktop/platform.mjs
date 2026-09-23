@@ -8,7 +8,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { stateHome, readJson, atomicJson, secureStateDirectory } from '../state.mjs';
+import { stateHome, readJson, atomicJson, secureStateDirectory, statePath } from '../state.mjs';
 
 const exec = promisify(execFile);
 export const serviceComponents = ['runtime', 'desktop'];
@@ -96,7 +96,7 @@ finally { $picker.Dispose(); $owner.Dispose() }
   throw new Error('请直接输入完整项目目录');
 }
 export async function installRecord(home = stateHome()) {
-  const value = await readJson(join(home, 'install.json'));
+  const value = await readJson(statePath(home, 'install'));
   if (value?.schema !== 1 || value.owner !== 'personal-devspace' || !value.packageRoot) throw new Error('Invalid Personal installation ownership');
   await access(join(value.packageRoot, 'personal', 'bin.mjs'));
   return value;
@@ -228,7 +228,7 @@ export async function registerJobs(home, root, selected = components, { record =
       throw error;
     }
   }
-  if (record) await atomicJson(join(home, 'install.json'), { schema: 1, owner: 'personal-devspace', packageRoot: resolve(root) });
+  if (record) await atomicJson(statePath(home, 'install'), { schema: 1, owner: 'personal-devspace', packageRoot: resolve(root) });
 }
 export async function jobAction(home, component, action) {
   if (!managedComponents.includes(component) || !['start', 'stop', 'remove'].includes(action)) throw new Error('Invalid job action');

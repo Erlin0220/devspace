@@ -9,6 +9,7 @@ import { mkdir, opendir, readFile, realpath, stat } from "node:fs/promises";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
 import type { ServerConfig } from "./config.js";
+import type { SubagentsConfig } from "./local-agent-config.js";
 import { createManagedWorktree } from "./git-worktrees.js";
 import {
   AccessDeniedError,
@@ -91,11 +92,15 @@ type DirectoryOps = {
 export class WorkspaceRegistry {
   private readonly workspaces = new Map<string, Workspace>();
   private readonly pendingCheckoutOpens = new Map<string, Promise<WorkspaceContext>>();
+  private readonly resolveSubagentsConfig: () => SubagentsConfig;
 
   constructor(
     private readonly config: ServerConfig,
     private readonly store?: WorkspaceStore,
-  ) {}
+    options: { resolveSubagentsConfig?: () => SubagentsConfig } = {},
+  ) {
+    this.resolveSubagentsConfig = options.resolveSubagentsConfig ?? (() => config.subagents);
+  }
 
   async openWorkspace(
     input: string | OpenWorkspaceInput,
@@ -229,7 +234,7 @@ export class WorkspaceRegistry {
   }
 
   private async reusedWorkspaceContext(workspace: Workspace): Promise<WorkspaceContext> {
-    workspace.agentProfiles = await loadLocalAgentProfiles(this.config, workspace.root);
+    workspace.agentProfiles = await loadLocalAgentProfiles(this.currentConfig(), workspace.root);
     const agentsFiles = await this.loadInitialAgentsFiles(workspace.root);
     const availableAgentsFiles = await this.findAvailableAgentsFiles(workspace.root, agentsFiles);
 
@@ -371,7 +376,7 @@ export class WorkspaceRegistry {
       sourceRoot: input.sourceRoot,
       worktree: input.worktree,
       ...this.loadSkillsForWorkspace(input.root),
-      agentProfiles: await loadLocalAgentProfiles(this.config, input.root),
+      agentProfiles: await loadLocalAgentProfiles(this.currentConfig(), input.root),
       activatedSkillDirs: new Set(),
     };
 
@@ -403,6 +408,11 @@ export class WorkspaceRegistry {
       skills: result.skills,
       skillDiagnostics: result.diagnostics,
     };
+  }
+
+  private currentConfig(): ServerConfig {
+    const subagents = this.resolveSubagentsConfig();
+    return subagents === this.config.subagents ? this.config : { ...this.config, subagents };
   }
 
   private assertWorkspaceRootAllowed(root: string, mode: WorkspaceMode, sourceRoot: string | undefined): string {

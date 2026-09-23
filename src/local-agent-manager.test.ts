@@ -45,6 +45,7 @@ const subagents: SubagentsConfig = {
     { id: "claude", enabled: true },
   ],
 };
+let currentSubagents = subagents;
 
 class FakeRuntime implements LocalAgentRuntime {
   readonly provider = "codex" as const;
@@ -129,7 +130,7 @@ const manager = new LocalAgentManager({
   pool: new LocalAgentRuntimePool(),
   loadProfiles: async () => [profile, disabledProfile],
   allowedRoots: [root],
-  subagents,
+  subagents: () => currentSubagents,
 });
 
 const defectStore = new LocalAgentStore(join(root, "defect-state"));
@@ -245,6 +246,40 @@ await waitFor(() => getRecord(first.id).status === "idle");
 assert.equal(getRecord(first.id).providerSessionId, "thread_test");
 assert.match(getRecord(first.id).latestResponse ?? "", /Task:\nhold/);
 
+currentSubagents = { ...subagents, enabled: false };
+const disabledAfterReload = await manager.start({
+  target: "reviewer",
+  prompt: "disabled after config reload",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+});
+assert.equal(disabledAfterReload.isErr(), true);
+if (disabledAfterReload.isErr()) assert.equal(disabledAfterReload.error.code, "PROVIDER_DISABLED");
+
+currentSubagents = {
+  enabled: true,
+  providers: [
+    { id: "codex", enabled: true, model: "gpt-reloaded", effort: "high" },
+    { id: "claude", enabled: true },
+  ],
+};
+const reloaded = unwrap(await manager.start({
+  target: "reviewer",
+  prompt: "after config reload",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+}));
+assert.equal(reloaded.model, "gpt-reloaded");
+assert.equal(reloaded.effort, "high");
+await waitFor(() => getRecord(reloaded.id).status === "idle");
+
+const preserved = unwrap(await manager.continue(first.id, "preserve existing model", {}, scope));
+assert.equal(preserved.model, "gpt-default");
+assert.equal(preserved.effort, "medium");
+await waitFor(() => getRecord(first.id).status === "idle");
+assert.equal(runtimes.get(first.id)?.inputs.at(-1)?.model, "gpt-default");
+assert.equal(runtimes.get(first.id)?.inputs.at(-1)?.effort, "medium");
+
 const continued = unwrap(await manager.continue(first.id, "continue", {
   model: "gpt-run",
   effort: "high",
@@ -262,7 +297,8 @@ const second = unwrap(await manager.start({
 }));
 await waitFor(() => getRecord(second.id).status === "idle");
 assert.notEqual(first.id, second.id);
-assert.equal(runtimes.size, 2, "different agents receive independent logical runtimes");
+assert.ok(runtimes.has(first.id) && runtimes.has(reloaded.id) && runtimes.has(second.id),
+  "different agents receive independent logical runtimes");
 
 const failed = unwrap(await manager.start({
   target: "reviewer",

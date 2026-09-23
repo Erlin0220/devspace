@@ -3,6 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
+import { LOCAL_AGENT_PROVIDERS } from "./local-agent-profiles.js";
 
 const emptyConfigDir = mkdtempSync(join(tmpdir(), "devspace-empty-config-test-"));
 const baseEnv = {
@@ -177,7 +178,7 @@ assert.equal(fileConfig.port, 8787);
 assert.equal(fileConfig.oauth.ownerToken, "persisted-owner-token-long-enough");
 assert.equal(fileConfig.publicBaseUrl, "https://devspace.example.com");
 assert.equal(fileConfig.subagents.enabled, true);
-assert.equal(fileConfig.subagents.providers.length, 7);
+assert.equal(fileConfig.subagents.providers.length, LOCAL_AGENT_PROVIDERS.length);
 assert.equal(fileConfig.artifactsEnabled, true);
 assert.equal(fileConfig.artifactMaxFileBytes, 321);
 assert.deepEqual(fileConfig.allowedHosts, [
