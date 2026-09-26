@@ -13,7 +13,9 @@ const ALL_WRITE_MODES: readonly LocalAgentWriteMode[] = [
 export function localAgentProviderWriteModes(
   provider: LocalAgentProvider,
 ): readonly LocalAgentWriteMode[] {
-  return provider === "agy" ? ["allowed", "full_access"] : ALL_WRITE_MODES;
+  return provider === "agy" || provider === "qoder"
+    ? ["allowed", "full_access"]
+    : ALL_WRITE_MODES;
 }
 
 export function localAgentProviderSupportsWriteMode(

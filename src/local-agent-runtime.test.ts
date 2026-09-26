@@ -21,7 +21,8 @@ import type {
 
 assert.deepEqual(localAgentProviderWriteModes("agy"), ["allowed", "full_access"]);
 assert.equal(localAgentProviderSupportsWriteMode("agy", "read_only"), false);
-assert.equal(localAgentProviderSupportsWriteMode("qoder", "read_only"), true);
+assert.deepEqual(localAgentProviderWriteModes("qoder"), ["allowed", "full_access"]);
+assert.equal(localAgentProviderSupportsWriteMode("qoder", "read_only"), false);
 
 const context: LocalAgentRuntimeContext = {
   agentId: "agt_test",

@@ -164,6 +164,7 @@ test("long-run dispatcher continuously drains tasks across different allowed wor
           id: "qwen-task",
           prompt: "run first bounded check",
           targets: ["qoder"],
+          writeMode: "allowed",
           graderCommands: ["check-first"],
         },
         {
@@ -190,7 +191,7 @@ test("long-run dispatcher continuously drains tasks across different allowed wor
   }
 });
 
-test("runtime routing config prefers qoder before other enabled providers", async () => {
+test("runtime writable routing config prefers qoder before other enabled providers", async () => {
   const f = await fixture();
   try {
     const job = await f.longruns.createJob({
@@ -199,7 +200,8 @@ test("runtime routing config prefers qoder before other enabled providers", asyn
       title: "runtime routing",
       tasks: [{
         id: "default-worker",
-        prompt: "run a bounded read-only check",
+        prompt: "run a bounded writable check",
+        writeMode: "allowed",
         graderCommands: ["verify-default"],
       }],
     });
@@ -282,8 +284,8 @@ test("read-only tasks skip providers that do not support that write mode", async
       () => f.longruns.getJob(job.id),
       (value) => value.status === "completed",
     );
-    assert.equal(f.agents.starts[0]?.target, "qoder");
-    assert.equal(completed.tasks[0]?.target, "qoder");
+    assert.equal(f.agents.starts[0]?.target, "codex");
+    assert.equal(completed.tasks[0]?.target, "codex");
   } finally {
     await f.cleanup();
   }
