@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { resolveShellCommand, terminateProcessTree } from "./process-platform.js";
+import { openExternalUrl, resolveShellCommand, terminateProcessTree } from "./process-platform.js";
 
 assert.deepEqual(resolveShellCommand("echo ok", "win32", { ComSpec: "C:\\Windows\\cmd.exe" }), {
   executable: "C:\\Windows\\cmd.exe",
@@ -59,3 +59,8 @@ terminateProcessTree(
   },
 );
 assert.deepEqual(fallbackCalls, ["child:SIGTERM"]);
+
+await assert.rejects(
+  () => openExternalUrl("file:///tmp/not-allowed"),
+  /Unsupported external URL protocol/,
+);

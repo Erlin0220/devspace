@@ -10,7 +10,7 @@ import {
   AgentProviderUnavailableError,
   captureAgentProviderResult,
 } from "./local-agent-errors.js";
-import { terminateProcessTree } from "./process-platform.js";
+import { openExternalUrl, terminateProcessTree } from "./process-platform.js";
 import type {
   LocalAgentDriver,
   LocalAgentRunCallbacks,
@@ -226,6 +226,9 @@ export class QoderRemoteControlRuntime implements LocalAgentRuntime {
     });
     try {
       await worker.initialize();
+      if (!reattachingRemoteSession) {
+        await openExternalUrl(qoderRemoteSessionUrl(remoteSessionId)).catch(() => undefined);
+      }
       return new QoderRemoteControlRuntime(
         input.command,
         remoteSessionId,

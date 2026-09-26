@@ -1,5 +1,5 @@
 import { basename } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 export interface ShellCommand {
   executable: string;
@@ -9,6 +9,60 @@ export interface ShellCommand {
 export interface KillableProcess {
   pid?: number;
   kill(signal?: NodeJS.Signals): boolean;
+}
+
+export async function openExternalUrl(
+  url: string,
+  platform: NodeJS.Platform = process.platform,
+  environment: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const parsed = new URL(url);
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    throw new Error(`Unsupported external URL protocol: ${parsed.protocol}`);
+  }
+
+  if (platform === "win32") {
+    await spawnAndDetach(
+      environment.SystemRoot
+        ? `${environment.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`
+        : "powershell.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "Start-Process -FilePath $env:DEVSPACE_EXTERNAL_URL",
+      ],
+      { ...environment, DEVSPACE_EXTERNAL_URL: parsed.href },
+    );
+    return;
+  }
+
+  await spawnAndDetach(
+    platform === "darwin" ? "/usr/bin/open" : "xdg-open",
+    [parsed.href],
+    environment,
+  );
+}
+
+async function spawnAndDetach(
+  executable: string,
+  args: string[],
+  environment: NodeJS.ProcessEnv,
+): Promise<void> {
+  await new Promise<void>((resolveSpawn, rejectSpawn) => {
+    const child = spawn(executable, args, {
+      env: environment,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.once("error", rejectSpawn);
+    child.once("spawn", () => {
+      child.unref();
+      resolveSpawn();
+    });
+  });
 }
 
 interface ProcessTreeRuntime {
