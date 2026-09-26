@@ -163,7 +163,7 @@ export class PersonalLongruns {
       {
         title: "Start durable DevSpace job",
         description:
-          "Create a durable queue of bounded subagent tasks and start draining it continuously. Unless a task/job pins targets, each newly-dispatched task resolves the latest runtime subagent routing config. Deterministic grader commands run outside the worker; tasks without deterministic graders require supervisor review and are never self-certified.",
+          "Create a durable queue of bounded subagent tasks and start draining it continuously. Unless a task/job pins targets, each newly-dispatched task resolves the latest runtime subagent routing config. Generic tasks default to read-only; when an explicitly pinned first target cannot run read-only but supports allowed writes (for example Qoder), omitted writeMode resolves to allowed so the requested provider is not silently filtered out. Deterministic grader commands run outside the worker; tasks without deterministic graders require supervisor review and are never self-certified.",
         inputSchema: {
           workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
           title: z.string().min(1).max(200),
@@ -305,19 +305,22 @@ export class PersonalLongruns {
       workspaceRoot: input.workspaceRoot,
       status: "running",
       ...(defaultTargets ? { defaultTargets } : {}),
-      tasks: input.tasks.map((task) => ({
-        ...task,
-        targets: task.targets ? uniqueNonEmpty(task.targets) : undefined,
-        dependsOn: task.dependsOn ? uniqueNonEmpty(task.dependsOn) : undefined,
-        writeMode: task.writeMode ?? "read_only",
-        graderCommands: task.graderCommands ?? [],
-        maxAttempts: task.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
-        workerTimeoutMinutes: task.workerTimeoutMinutes ?? DEFAULT_WORKER_TIMEOUT_MINUTES,
-        graderTimeoutMinutes: task.graderTimeoutMinutes ?? DEFAULT_GRADER_TIMEOUT_MINUTES,
-        status: "pending",
-        attempts: 0,
-        graderResults: [],
-      })),
+      tasks: input.tasks.map((task) => {
+        const targets = task.targets ? uniqueNonEmpty(task.targets) : undefined;
+        return {
+          ...task,
+          targets,
+          dependsOn: task.dependsOn ? uniqueNonEmpty(task.dependsOn) : undefined,
+          writeMode: task.writeMode ?? defaultWriteModeForTargets(targets ?? defaultTargets),
+          graderCommands: task.graderCommands ?? [],
+          maxAttempts: task.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+          workerTimeoutMinutes: task.workerTimeoutMinutes ?? DEFAULT_WORKER_TIMEOUT_MINUTES,
+          graderTimeoutMinutes: task.graderTimeoutMinutes ?? DEFAULT_GRADER_TIMEOUT_MINUTES,
+          status: "pending",
+          attempts: 0,
+          graderResults: [],
+        };
+      }),
       pauseRequested: false,
       cancelRequested: false,
       createdAt: now,
@@ -941,6 +944,21 @@ function resultResponse(value: unknown) {
 
 function uniqueNonEmpty(values: readonly string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+}
+
+function defaultWriteModeForTargets(
+  targets: readonly string[] | undefined,
+): LocalAgentWriteMode {
+  const firstTarget = targets?.[0];
+  if (
+    firstTarget &&
+    isLocalAgentProvider(firstTarget) &&
+    !localAgentProviderSupportsWriteMode(firstTarget, "read_only") &&
+    localAgentProviderSupportsWriteMode(firstTarget, "allowed")
+  ) {
+    return "allowed";
+  }
+  return "read_only";
 }
 
 function cloneJob(job: LongrunJob): LongrunJob {

@@ -227,6 +227,58 @@ test("runtime writable routing config prefers qoder before other enabled provide
   }
 });
 
+test("pinned qoder tasks default to writable mode when writeMode is omitted", async () => {
+  const f = await fixture();
+  try {
+    const job = await f.longruns.createJob({
+      workspaceId: "ws_test",
+      workspaceRoot: "C:\\project\\fixture",
+      title: "qoder writable default",
+      defaultTargets: ["qoder"],
+      tasks: [{
+        id: "self-healing-validation",
+        prompt: "validate, repair, and verify the bounded task",
+        graderCommands: ["verify-repair"],
+      }],
+    });
+    const completed = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "completed",
+    );
+    assert.equal(f.agents.starts[0]?.target, "qoder");
+    assert.equal(f.agents.starts[0]?.writeMode, "allowed");
+    assert.equal(completed.tasks[0]?.writeMode, "allowed");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("generic long-run tasks still default to read-only mode", async () => {
+  const f = await fixture();
+  try {
+    const job = await f.longruns.createJob({
+      workspaceId: "ws_test",
+      workspaceRoot: "C:\\project\\fixture",
+      title: "safe default",
+      defaultTargets: ["codex"],
+      tasks: [{
+        id: "inspect",
+        prompt: "inspect without changes",
+        graderCommands: ["verify-inspection"],
+      }],
+    });
+    const completed = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "completed",
+    );
+    assert.equal(f.agents.starts[0]?.target, "codex");
+    assert.equal(f.agents.starts[0]?.writeMode, "read_only");
+    assert.equal(completed.tasks[0]?.writeMode, "read_only");
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("long-run resolves fresh runtime routing before each newly-dispatched task", async () => {
   const baseConfig = config();
   let current = baseConfig.subagents;
