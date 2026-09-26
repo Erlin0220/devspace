@@ -6,8 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { atomicJson, readJson, secureStateDirectory, stateHome, statePath } from './state.mjs';
 import { inspectCandidate, payloadDigest, verifyCandidate } from './artifact.mjs';
 import { readPersonalAuth, readPersonalConfig } from './config.mjs';
-import { installerRunning, jobRunning, jobAction, registerDesktopEntries, registerJobs } from './desktop/platform.mjs';
-import { runtimeSnapshot, stopIdleAgentDaemon, waitForRuntime } from './runtime.mjs';
+import { installerRunning, jobAction, registerDesktopEntries, registerJobs } from './desktop/platform.mjs';
+import { stopAgentDaemon, waitForRuntime } from './runtime.mjs';
 import { runNpmCommand } from './verification.mjs';
 import { legacyTasksAction } from './legacy-import.mjs';
 
@@ -107,23 +107,13 @@ export async function installPersonal(source, home = stateHome(), { requestId, e
   const previous = await readJson(statePath(home, 'install'), null);
   const config = await readPersonalConfig(home);
   if (!(await readPersonalAuth(home, {})).apiToken) throw new Error('Migrate or configure the private Personal API Token before installing');
-  // Recheck after staging as well: testing/download time may overlap a new command.
-  const idle = async () => {
-    const snapshot = await runtimeSnapshot(home);
-    if (snapshot.owned && snapshot.runningProcesses > 0) throw new Error('Runtime has active commands; installation was not started');
-    if (snapshot.activeAgentTurns > 0) throw new Error('Runtime has active subagent turns; installation was not started');
-    if (snapshot.activeAgentTurns === null) throw new Error('Subagent activity could not be verified; installation was not started');
-    if (previous && !snapshot.owned && await jobRunning(home, 'runtime')) throw new Error('Running runtime did not provide a trustworthy idle status; refusing an installation switch');
-  };
-  await idle();
   if (requestId) await report(home, requestId, { status: 'staging', source, version: stable.version });
   const destination = await copyCandidate(source, home, manifest, payload);
-  await idle();
   if (requestId) await report(home, requestId, { status: 'switching', version: stable.version, previous: previous?.packageRoot });
   const result = await activateCandidate({ paused: config.paused,
     stop: async () => {
       try {
-        await stopIdleAgentDaemon(home);
+        await stopAgentDaemon(home);
         if (previous) await stopOwn(home); else await legacyTasksAction(home, 'stop');
       }
       catch (error) {

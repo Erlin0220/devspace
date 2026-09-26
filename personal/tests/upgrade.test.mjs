@@ -6,8 +6,9 @@ import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { cleanRevision, payloadFiles, recordCandidate, verifyCandidate } from '../artifact.mjs';
-import { selectStable, stableVersion, discoverStable } from '../upgrade.mjs';
+import { assertLinearOverlay, selectStable, stableVersion, discoverStable } from '../upgrade.mjs';
 import { runNpmCommand, VERIFICATION_STAGES } from '../verification.mjs';
+const exec = promisify(execFile);
 const release = (version, extra = {}) => ({ tag_name: `v${version}`, draft: false, prerelease: false, published_at: '2026-09-01', body: 'notes', ...extra });
 const registry = version => ({ 'dist-tags': { latest: version, beta: '99.0.0-beta.9' }, versions: { '1.0.7': {}, [version]: {}, '99.0.0-beta.9': {} } });
 test('stable selection excludes all prereleases, misleading tags and drafts', () => {
@@ -32,6 +33,34 @@ test('package and baseline retain official identity; no private version masquera
   const pkg = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.version, baseline.version); assert.equal(baseline.channel, 'stable'); assert.ok(stableVersion(pkg.version));
   assert.equal(baseline.repository, 'Waishnav/devspace'); assert.match(baseline.commit, /^[a-f0-9]{40}$/);
+});
+
+test('release check performs one full verification pass and keeps stable replay explicit', async () => {
+  const pkg = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
+  assert.equal(pkg.scripts['personal:release-check'], 'npm run personal:verify');
+  assert.equal(pkg.scripts['personal:replay'], 'node personal/upgrade.mjs replay');
+});
+
+test('release verification keeps the Personal overlay linear without running replay', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'personal-linear-overlay-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const git = args => exec('git', ['-c', 'user.name=Personal Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', ...args],
+    { cwd: root, windowsHide: true });
+  await git(['init', '--quiet']);
+  await writeFile(join(root, 'base.txt'), 'base\n'); await git(['add', '.']); await git(['commit', '-m', 'base']);
+  const baseline = (await git(['rev-parse', 'HEAD'])).stdout.trim();
+  await mkdir(join(root, 'personal'), { recursive: true });
+  await writeFile(join(root, 'personal/upstream.json'), JSON.stringify({ version: '1.0.8', tag: 'v1.0.8', commit: baseline }));
+  await git(['add', '.']); await git(['commit', '-m', 'overlay']);
+  await assertLinearOverlay(root);
+
+  const main = (await git(['branch', '--show-current'])).stdout.trim();
+  await git(['checkout', '-b', 'side']);
+  await writeFile(join(root, 'side.txt'), 'side\n'); await git(['add', '.']); await git(['commit', '-m', 'side']);
+  await git(['checkout', main]);
+  await writeFile(join(root, 'main.txt'), 'main\n'); await git(['add', '.']); await git(['commit', '-m', 'main']);
+  await git(['merge', '--no-ff', 'side', '-m', 'merge']);
+  await assert.rejects(assertLinearOverlay(root), /not linear/);
 });
 
 test('artifact receipt rejects a commit changed while verification was running', async t => {

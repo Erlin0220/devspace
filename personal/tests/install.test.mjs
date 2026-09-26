@@ -63,6 +63,11 @@ test('rollback failures are explicit rather than claiming successful recovery', 
   await assert.rejects(activateCandidate({ paused: false, stop: async () => {}, select: async () => { throw new Error('select'); },
     restore: async () => { throw new Error('rollback'); } }), /rollback needs attention/);
 });
+test('installer force switch has no runtime-activity gate', async () => {
+  const source = await readFile(new URL('../install.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /runningProcesses|activeAgentTurns|runtimeSnapshot/);
+  assert.match(source, /stopAgentDaemon\(home\)/);
+});
 test('Windows fresh state root is secured before any child state exists', { skip: process.platform !== 'win32' }, async t => {
   const parent = await mkdtemp(join(tmpdir(), 'personal-acl-fresh-')); t.after(() => rm(parent, { recursive: true, force: true }));
   const home = join(parent, 'state');

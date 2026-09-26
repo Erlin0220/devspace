@@ -210,6 +210,76 @@ const startupFailure = await startupFailureClient.ensureReady();
 assert.equal(startupFailure.isErr(), true);
 if (startupFailure.isErr()) assert.equal(startupFailure.error.code, "DAEMON_STARTUP_FAILURE");
 
+const forceUpgradeStateDir = join(root, "force-upgrade-state");
+await mkdir(forceUpgradeStateDir, { recursive: true });
+const forceUpgradePaths = localAgentDaemonPaths(forceUpgradeStateDir);
+ensureLocalAgentDaemonSecret(forceUpgradePaths);
+const forceUpgradeLock = new LocalAgentDaemonLock(forceUpgradePaths);
+forceUpgradeLock.acquire();
+const forceUpgradeMethods: string[] = [];
+const forceUpgradeServer = createNetServer((socket) => {
+  let buffer = "";
+  socket.setEncoding("utf8");
+  socket.on("data", (chunk: string | Buffer) => {
+    buffer += chunk.toString();
+    const newline = buffer.indexOf("\n");
+    if (newline === -1) return;
+    const request = JSON.parse(buffer.slice(0, newline)) as {
+      requestId: string;
+      protocolVersion: number;
+      method: string;
+    };
+    forceUpgradeMethods.push(`${request.method}:${request.protocolVersion}`);
+    if (request.protocolVersion !== 1) {
+      socket.end(encodeLocalAgentDaemonResponse({
+        requestId: request.requestId,
+        protocolVersion: 1,
+        ok: false,
+        error: {
+          code: "DAEMON_PROTOCOL_MISMATCH",
+          message: "Unsupported daemon protocol version 3; expected 1.",
+          retryable: false,
+        },
+      }));
+      return;
+    }
+    socket.end(encodeLocalAgentDaemonResponse({
+      requestId: request.requestId,
+      protocolVersion: 1,
+      ok: true,
+      result: {
+        state: "stopping",
+        protocolVersion: 1,
+        pid: process.pid,
+        endpoint: forceUpgradePaths.endpoint,
+        startedAt: "now",
+        activeTurns: 1,
+        runtimeCount: 1,
+        clientConnections: 1,
+      },
+    }), () => {
+      forceUpgradeServer.close(() => setTimeout(() => forceUpgradeLock.release(), 50));
+    });
+  });
+});
+await new Promise<void>((resolveListen, rejectListen) => {
+  forceUpgradeServer.once("error", rejectListen);
+  forceUpgradeServer.listen(forceUpgradePaths.endpoint, resolveListen);
+});
+const forceUpgradeClient = new LocalAgentClient({
+  stateDir: forceUpgradeStateDir,
+  requestTimeoutMs: 500,
+  spawnDaemon: () => { throw new Error("force stop must not spawn a daemon"); },
+});
+try {
+  unwrap(await forceUpgradeClient.stopForUpgrade());
+  await waitFor(() => !existsSync(forceUpgradePaths.lockPath));
+  assert.deepEqual(forceUpgradeMethods, ["daemon.stop:3", "daemon.stop:1"]);
+} finally {
+  forceUpgradeLock.release();
+  forceUpgradeServer.close();
+}
+
 const upgradeStateDir = join(root, "upgrade-state");
 await mkdir(upgradeStateDir, { recursive: true });
 const upgradePaths = localAgentDaemonPaths(upgradeStateDir);

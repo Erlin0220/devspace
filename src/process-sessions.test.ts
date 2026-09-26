@@ -105,6 +105,17 @@ const inputResult = await manager.write({
 assert.equal(inputResult.running, false);
 assert.match(inputResult.output, /input:hello/);
 
+const initialInput = await manager.start({
+  workspaceId: "workspace-a",
+  cwd: process.cwd(),
+  command: `${node} -e "process.stdin.once('data', data => { console.log('initial:' + data.toString().trim()); process.exit(0); })"`,
+  initialStdin: "from-start\n",
+  yieldTimeMs: 2_000,
+});
+assert.equal(initialInput.running, false);
+assert.equal(initialInput.exitCode, 0);
+assert.match(initialInput.output, /initial:from-start/);
+
 const defaultInteractive = await manager.start({
   workspaceId: "workspace-a",
   cwd: process.cwd(),

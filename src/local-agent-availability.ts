@@ -1,5 +1,6 @@
 import { accessSync, constants } from "node:fs";
 import { delimiter, resolve } from "node:path";
+import { resolveQoderCommand } from "./local-agent-qoder.js";
 import {
   LOCAL_AGENT_PROVIDERS,
   type LocalAgentProvider,
@@ -38,7 +39,9 @@ export function checkLocalAgentProviderAvailability(
     case "grok":
       return commandAvailability(provider, env.GROK_COMMAND ?? "grok", env);
     case "qoder":
-      return commandAvailability(provider, env.QODER_COMMAND ?? "qodercli", env);
+      return resolveQoderCommand(env)
+        ? { name: provider, available: true }
+        : { name: provider, available: false, reason: "qodercli executable not found" };
     case "agy":
       return commandAvailability(provider, env.AGY_COMMAND ?? "agy", env);
   }

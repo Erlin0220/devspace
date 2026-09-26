@@ -87,21 +87,29 @@ class FakeAgentClient {
 
 class FakeProcesses {
   readonly commands: string[] = [];
+  readonly starts: Array<{ command: string; initialStdin?: string }> = [];
   readonly exits: number[];
+  readonly outputs: string[];
 
   constructor(
     exits: number[] = [],
     private readonly onStart?: (command: string) => void,
+    outputs: string[] = [],
   ) {
     this.exits = [...exits];
+    this.outputs = [...outputs];
   }
 
-  async start(input: { command: string }) {
+  async start(input: { command: string; initialStdin?: string }) {
     this.commands.push(input.command);
+    this.starts.push({ command: input.command, initialStdin: input.initialStdin });
     this.onStart?.(input.command);
     const exitCode = this.exits.length > 0 ? this.exits.shift()! : 0;
+    const output = this.outputs.length > 0
+      ? this.outputs.shift()!
+      : exitCode === 0 ? "grader ok" : "grader failed";
     return {
-      output: exitCode === 0 ? "grader ok" : "grader failed",
+      output,
       outputTruncated: false,
       running: false,
       exitCode,
@@ -137,18 +145,21 @@ async function fixture(
     resolveSubagentsConfig?: () => SubagentsConfig;
     onGraderStart?: (command: string) => void;
     agentTerminals?: Array<Partial<LocalAgentRecord>>;
+    processOutputs?: string[];
+    qoderCommand?: string;
   } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "devspace-longrun-"));
   const agents = new FakeAgentClient(options.agentTerminals);
   const baseConfig = options.config ?? config();
-  const processes = new FakeProcesses(exits, options.onGraderStart);
+  const processes = new FakeProcesses(exits, options.onGraderStart, options.processOutputs);
   const longruns = new PersonalLongruns(
     baseConfig,
     processes as never,
     home,
     agents as never,
     options.resolveSubagentsConfig ?? (() => baseConfig.subagents),
+    () => options.qoderCommand ?? "qoder-test",
   );
   return {
     home,
@@ -279,6 +290,144 @@ test("generic long-run tasks still default to read-only mode", async () => {
   }
 });
 
+test("native qoder goal self-heals then waits for independent supervisor approval", async () => {
+  const f = await fixture([], {
+    processOutputs: [
+      "goal worker finished candidate",
+      "No active goal. Use /goal <description> to create one.",
+      "grader ok",
+    ],
+    qoderCommand: "C:\\Tools\\qoder.exe",
+  });
+  try {
+    const job = await f.longruns.createJob({
+      workspaceId: "ws_test",
+      workspaceRoot: "C:\\project\\fixture",
+      title: "qoder goal acceptance",
+      defaultTargets: ["qoder"],
+      tasks: [{
+        id: "visual-acceptance",
+        prompt: "finish the visual acceptance task",
+        executionMode: "qoder_goal",
+        goalTurns: 200,
+        graderCommands: ["verify-visual"],
+        maxAttempts: 3,
+      }],
+    });
+
+    const review = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "awaiting_review",
+    );
+    const goalStart = f.processes.starts[0];
+    const sessionId = review.tasks[0]?.qoderSessionId;
+    assert.ok(sessionId);
+    assert.match(goalStart?.command ?? "", /qoder\.exe/);
+    assert.match(goalStart?.command ?? "", new RegExp(`--session-id ${sessionId}`));
+    assert.match(goalStart?.initialStdin ?? "", /^\/goal /);
+    assert.match(goalStart?.initialStdin ?? "", /--turns 200\n$/);
+    assert.match(f.processes.starts[1]?.command ?? "", new RegExp(`--resume ${sessionId}`));
+    assert.equal(f.processes.starts[1]?.initialStdin, "/goal status\n");
+    assert.equal(f.processes.commands[2], "verify-visual");
+    assert.equal(review.tasks[0]?.status, "awaiting_review");
+    assert.equal(review.tasks[0]?.attempts, 1);
+    assert.equal((review as typeof review & { acceptanceReady?: boolean }).acceptanceReady, true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("supervisor retry reuses the same qoder goal session and feeds back evidence", async () => {
+  const f = await fixture([], {
+    processOutputs: [
+      "first candidate",
+      "No active goal.",
+      "grader ok",
+      "repaired candidate",
+      "No active goal.",
+      "grader ok",
+    ],
+  });
+  try {
+    const job = await f.longruns.createJob({
+      workspaceId: "ws_test",
+      workspaceRoot: "C:\\project\\fixture",
+      title: "qoder goal retry",
+      defaultTargets: ["qoder"],
+      tasks: [{
+        id: "repair",
+        prompt: "complete acceptance",
+        executionMode: "qoder_goal",
+        graderCommands: ["verify-repair"],
+        maxAttempts: 3,
+      }],
+    });
+    const firstReview = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "awaiting_review",
+    );
+    const sessionId = firstReview.tasks[0]?.qoderSessionId;
+    assert.ok(sessionId);
+
+    await f.longruns.reviewTask(
+      job.id,
+      "repair",
+      "retry",
+      "Header spacing still differs from the locked reference.",
+    );
+    const secondReview = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "awaiting_review" && value.tasks[0]?.attempts === 2,
+    );
+    assert.equal(secondReview.tasks[0]?.qoderSessionId, sessionId);
+    const retryStart = f.processes.starts[3];
+    assert.match(retryStart?.command ?? "", new RegExp(`--resume ${sessionId}`));
+    assert.match(retryStart?.initialStdin ?? "", /Header spacing still differs/);
+
+    const completed = await f.longruns.reviewTask(job.id, "repair", "approve");
+    assert.equal(completed.tasks[0]?.status, "passed");
+    const final = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "completed",
+    );
+    assert.equal(final.tasks[0]?.status, "passed");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("paused or otherwise unproven qoder goal never self-certifies", async () => {
+  const f = await fixture([], {
+    processOutputs: [
+      "goal worker returned without completion proof",
+      "**Status:** paused\n**Turns:** 7 / 200",
+    ],
+  });
+  try {
+    const job = await f.longruns.createJob({
+      workspaceId: "ws_test",
+      workspaceRoot: "C:\\project\\fixture",
+      title: "paused qoder goal",
+      defaultTargets: ["qoder"],
+      tasks: [{
+        id: "blocked",
+        prompt: "complete acceptance",
+        executionMode: "qoder_goal",
+        maxAttempts: 1,
+      }],
+    });
+    const review = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "needs_review",
+    );
+    assert.equal(review.tasks[0]?.status, "needs_review");
+    assert.match(review.tasks[0]?.error ?? "", /remains paused/);
+    assert.equal((review as typeof review & { acceptanceReady?: boolean }).acceptanceReady, false);
+  } finally {
+    await f.cleanup();
+  }
+});
+
 test("long-run resolves fresh runtime routing before each newly-dispatched task", async () => {
   const baseConfig = config();
   let current = baseConfig.subagents;
@@ -383,7 +532,7 @@ test("retryable worker provider failure continues the same session automatically
     agentTerminals: [
       {
         status: "error",
-        error: "Qoder native Remote Control worker exited unexpectedly.",
+        error: "Qoder CLI worker exited unexpectedly.",
         errorCode: "PROVIDER_UNAVAILABLE",
         errorRetryable: true,
       },

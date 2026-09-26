@@ -43,9 +43,10 @@ Optional control-port conflicts, tray observers and diagnostic
 projection failures do not roll back a healthy core. Pause intent survives
 restart/install. Partial stop refuses activation; failed candidate readiness
 restores the previous runtime; rollback failure is reported explicitly. Installation
-requires verified application bytes, the tested Node version, private auth and a
-trustworthy idle state. Shell commands and active subagent turns both block a
-switch. One `install-attempt.json` owns queue/progress/result state.
+requires verified application bytes, the tested Node version and private auth.
+An approved installation force-stops the owned Runtime and agent daemon; active
+shell commands and subagent turns do not block the switch. One
+`install-attempt.json` owns queue/progress/result state.
 
 ## Recorded verification and limits
 

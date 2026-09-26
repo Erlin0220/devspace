@@ -50,11 +50,18 @@ async function git(cwd, args, timeout = 120000) {
   try { return (await exec('git', args, { cwd, timeout, windowsHide: true, maxBuffer: 8 * 1024 * 1024 })).stdout.trim(); }
   catch (error) { throw new Error(`git ${args[0]} failed: ${String(error.stderr ?? error.message).slice(-5000)}`); }
 }
+export async function assertLinearOverlay(root = repositoryRoot) {
+  const baseline = JSON.parse(await readFile(join(root, 'personal', 'upstream.json'), 'utf8'));
+  if (!stableVersion(baseline.version) || !/^[a-f0-9]{40}$/.test(baseline.commit)) throw new Error('Invalid recorded stable baseline');
+  try { await git(root, ['merge-base', '--is-ancestor', baseline.commit, 'HEAD']); }
+  catch { throw new Error('Personal overlay does not descend from the recorded official stable baseline'); }
+  if (await git(root, ['rev-list', '--merges', `${baseline.commit}..HEAD`])) throw new Error('Personal overlay is not linear');
+  return baseline;
+}
 // Native Git does the replay. This never switches/restarts the installed application.
 export async function prepareStable({ root = repositoryRoot, onProgress = () => {}, replayCurrent = false } = {}) {
   if (await git(root, ['status', '--porcelain'])) throw new Error('Commit or preserve current changes before preparing an upgrade');
-  const baseline = JSON.parse(await readFile(join(root, 'personal', 'upstream.json'), 'utf8'));
-  if (!stableVersion(baseline.version) || !/^[a-f0-9]{40}$/.test(baseline.commit)) throw new Error('Invalid recorded stable baseline');
+  const baseline = await assertLinearOverlay(root);
   onProgress('Checking official stable releases');
   const release = await discoverStable();
   if (semver.lt(release.version, baseline.version)) throw new Error('Stable discovery would downgrade the baseline');
@@ -65,8 +72,6 @@ export async function prepareStable({ root = repositoryRoot, onProgress = () => 
   if (pkg.name !== '@waishnav/devspace' || pkg.version !== release.version) throw new Error('Official tag/package identity mismatch');
   if (release.version === baseline.version && commit !== baseline.commit) throw new Error('Official stable tag moved; explicit integrity review is required');
   if (commit === baseline.commit && !replayCurrent) return { unchanged: true, version: release.version, commit };
-  await git(root, ['merge-base', '--is-ancestor', baseline.commit, 'HEAD']);
-  if (await git(root, ['rev-list', '--merges', `${baseline.commit}..HEAD`])) throw new Error('Personal overlay is not linear');
   const head = await git(root, ['rev-parse', 'HEAD']);
   const suffix = `${release.version}-${Date.now()}`;
   const branch = `personal/upgrade-${suffix}`;

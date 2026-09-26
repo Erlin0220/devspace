@@ -16,8 +16,10 @@ keep core-file seams short and avoid changing upstream config schema. No memory
 service is allowed in the execution chain. One-time private migration is not a
 recurring runtime capability.
 
-Authentication, process ownership, active-command avoidance and credential
-origin binding fail closed. UI, log cache, diagnostics and optional extensions
+Authentication, process ownership and credential origin binding fail closed.
+Installation is a forced switch: active shell commands and subagent turns do not
+delay an approved upgrade; the owned Runtime and agent daemon are stopped as part
+of activation. UI, log cache, diagnostics and optional extensions
 fail independently. Never reinterpret a successful command as verified native
 UI, current-host schema refresh, installation success or cross-platform coverage.
 
@@ -26,9 +28,17 @@ restarted. Persistent apps and installers must be started through their OS owner
 not inside DevSpace/Windows MCP command trees. Touch only verified Personal jobs.
 Do not display credentials, read unrelated private stores or stop Team/tunnels.
 
-Run upstream tests plus `npm run test:personal`, then `npm run personal:live`
-for native acceptance on the actual platform, and review
-`git diff --diff-filter=M <official-base> HEAD`. After a final clean commit use
-the single deterministic `npm run personal:release-check` action; it creates a
-fresh candidate manifest and rehearses the current-stable upgrade without
-fabricating a new upstream release. Commit and push only what was tested.
+Keep the development loop proportional to the change. During implementation run
+the smallest affected typecheck, test, build or runtime check that proves the
+changed contract; small local changes do not require the full upstream suite,
+all Personal tests, native build, live acceptance or stable replay.
+
+For an installable current-checkout candidate, make the final revision clean and
+run `npm run personal:release-check` once. That command owns the full deterministic
+verification pass and fresh candidate manifest. Run `npm run personal:live` when
+the change touches native desktop behavior, process ownership/lifecycle,
+installer/shortcuts, or another behavior that requires actual-platform native
+acceptance. Run `npm run personal:replay` when the upstream baseline changes,
+replay/rebase behavior changes, or replayability is explicitly being checked.
+Review `git diff --diff-filter=M <official-base> HEAD` when the overlay/base
+relationship is relevant. Commit and push only what was tested.

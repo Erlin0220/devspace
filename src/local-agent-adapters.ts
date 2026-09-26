@@ -23,7 +23,7 @@ import {
   extractPiProviderError,
   type PiSessionFactory,
 } from "./local-agent-pi.js";
-import { QoderRemoteControlLocalAgentDriver } from "./local-agent-qoder.js";
+import { QoderCliLocalAgentDriver } from "./local-agent-qoder.js";
 import type { LocalAgentDriver } from "./local-agent-runtime.js";
 
 export type LocalAgentAdapter = LocalAgentDriver;
@@ -46,7 +46,7 @@ export function createLocalAgentDrivers(
     new AcpLocalAgentDriver("cursor", options.env),
     new AcpLocalAgentDriver("copilot", options.env),
     new AcpLocalAgentDriver("grok", options.env),
-    new QoderRemoteControlLocalAgentDriver(options.env),
+    new QoderCliLocalAgentDriver(options.env),
     new AgyLocalAgentDriver(options.env),
   ];
 }
@@ -64,7 +64,7 @@ export function createLocalAgentAdapter(
     case "copilot":
     case "grok":
       return new AcpLocalAgentDriver(provider, options.env);
-    case "qoder": return new QoderRemoteControlLocalAgentDriver(options.env);
+    case "qoder": return new QoderCliLocalAgentDriver(options.env);
     case "agy": return new AgyLocalAgentDriver(options.env);
   }
 }

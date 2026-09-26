@@ -22,6 +22,7 @@ import {
   type SubagentsConfig,
 } from "../local-agent-config.js";
 import { isLocalAgentProvider } from "../local-agent-profiles.js";
+import { resolveQoderCommand } from "../local-agent-qoder.js";
 import type {
   LocalAgentRecord,
   LocalAgentWorkspaceScope,
@@ -49,6 +50,7 @@ type LongrunTaskStatus =
   | "awaiting_review"
   | "needs_review"
   | "failed";
+type LongrunExecutionMode = "agent_turn" | "qoder_goal";
 
 export interface LongrunTaskInput {
   id: string;
@@ -56,6 +58,9 @@ export interface LongrunTaskInput {
   targets?: string[];
   dependsOn?: string[];
   writeMode?: LocalAgentWriteMode;
+  executionMode?: LongrunExecutionMode;
+  goalTurns?: number;
+  requireSupervisorReview?: boolean;
   graderCommands?: string[];
   maxAttempts?: number;
   workerTimeoutMinutes?: number;
@@ -75,6 +80,7 @@ interface LongrunTaskState extends LongrunTaskInput {
   attempts: number;
   target?: string;
   agentId?: string;
+  qoderSessionId?: string;
   workerResponse?: string;
   error?: string;
   reviewNote?: string;
@@ -107,15 +113,19 @@ const resultOutputSchema = { result: z.string() };
 const jobIdSchema = z.string().min(1);
 const taskIdSchema = z.string().min(1);
 const writeModeSchema = z.enum(["read_only", "allowed", "full_access"]);
+const executionModeSchema = z.enum(["agent_turn", "qoder_goal"]);
 const taskSchema = z.object({
   id: z.string().min(1).max(120),
   prompt: z.string().min(1).max(40_000),
   targets: z.array(z.string().min(1)).min(1).max(10).optional(),
   dependsOn: z.array(z.string().min(1)).max(50).optional(),
   writeMode: writeModeSchema.optional(),
+  executionMode: executionModeSchema.optional(),
+  goalTurns: z.number().int().min(1).max(5_000).optional(),
+  requireSupervisorReview: z.boolean().optional(),
   graderCommands: z.array(z.string().min(1).max(8_000)).max(20).optional(),
   maxAttempts: z.number().int().min(1).max(5).optional(),
-  workerTimeoutMinutes: z.number().int().min(1).max(180).optional(),
+  workerTimeoutMinutes: z.number().int().min(1).max(1_440).optional(),
   graderTimeoutMinutes: z.number().int().min(1).max(60).optional(),
 });
 
@@ -129,6 +139,7 @@ const POLL_INTERVAL_MS = 1_000;
 const DEFAULT_WORKER_TIMEOUT_MINUTES = 50;
 const DEFAULT_GRADER_TIMEOUT_MINUTES = 10;
 const DEFAULT_MAX_ATTEMPTS = 2;
+const DEFAULT_QODER_GOAL_TURNS = 200;
 const MAX_GRADER_OUTPUT = 12_000;
 
 export class PersonalLongruns {
@@ -147,6 +158,7 @@ export class PersonalLongruns {
     stateHome: string,
     client: LongrunAgentClient = createLocalAgentClient(config),
     private readonly resolveSubagentsConfig: () => SubagentsConfig = () => config.subagents,
+    private readonly resolveQoderCliCommand: () => string | undefined = () => resolveQoderCommand(),
   ) {
     this.client = client;
     this.statePath = join(stateHome, "longrun-jobs.json");
@@ -163,7 +175,7 @@ export class PersonalLongruns {
       {
         title: "Start durable DevSpace job",
         description:
-          "Create a durable queue of bounded subagent tasks and start draining it continuously. Unless a task/job pins targets, each newly-dispatched task resolves the latest runtime subagent routing config. Generic tasks default to read-only; when an explicitly pinned first target cannot run read-only but supports allowed writes (for example Qoder), omitted writeMode resolves to allowed so the requested provider is not silently filtered out. Deterministic grader commands run outside the worker; tasks without deterministic graders require supervisor review and are never self-certified.",
+          "Create a durable queue of bounded tasks and start draining it continuously. agent_turn uses the configured subagent runtime; qoder_goal runs the native Qoder CLI /goal loop in the workspace and keeps its session id for supervisor retries. Generic tasks default to read-only; pinned Qoder work defaults to allowed writes. Deterministic graders run outside the worker. requireSupervisorReview keeps a self-completed task in awaiting_review until an independent supervisor approves it.",
         inputSchema: {
           workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
           title: z.string().min(1).max(200),
@@ -307,11 +319,27 @@ export class PersonalLongruns {
       ...(defaultTargets ? { defaultTargets } : {}),
       tasks: input.tasks.map((task) => {
         const targets = task.targets ? uniqueNonEmpty(task.targets) : undefined;
+        const executionMode = task.executionMode ?? "agent_turn";
+        const effectiveTargets = targets ?? defaultTargets;
+        if (executionMode === "qoder_goal" && effectiveTargets?.[0] !== "qoder") {
+          throw new Error(
+            `Task ${task.id} uses qoder_goal and must pin qoder as its first target.`,
+          );
+        }
+        const writeMode =
+          task.writeMode ?? defaultWriteModeForTargets(effectiveTargets);
+        if (executionMode === "qoder_goal" && writeMode === "read_only") {
+          throw new Error(`Task ${task.id} uses qoder_goal and requires writable mode.`);
+        }
         return {
           ...task,
           targets,
           dependsOn: task.dependsOn ? uniqueNonEmpty(task.dependsOn) : undefined,
-          writeMode: task.writeMode ?? defaultWriteModeForTargets(targets ?? defaultTargets),
+          writeMode,
+          executionMode,
+          goalTurns: task.goalTurns ?? DEFAULT_QODER_GOAL_TURNS,
+          requireSupervisorReview:
+            task.requireSupervisorReview ?? executionMode === "qoder_goal",
           graderCommands: task.graderCommands ?? [],
           maxAttempts: task.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
           workerTimeoutMinutes: task.workerTimeoutMinutes ?? DEFAULT_WORKER_TIMEOUT_MINUTES,
@@ -490,6 +518,11 @@ export class PersonalLongruns {
   }
 
   private async executeTask(job: LongrunJob, task: LongrunTaskState): Promise<void> {
+    if (task.executionMode === "qoder_goal") {
+      await this.executeQoderGoalTask(job, task);
+      return;
+    }
+
     if (
       task.status === "running" &&
       task.agentId &&
@@ -564,6 +597,229 @@ export class PersonalLongruns {
     }
   }
 
+  private async executeQoderGoalTask(
+    job: LongrunJob,
+    task: LongrunTaskState,
+  ): Promise<void> {
+    const maximumAttempts = task.maxAttempts ?? DEFAULT_MAX_ATTEMPTS;
+    if (
+      task.status === "running" &&
+      task.qoderSessionId &&
+      task.attempts > 0 &&
+      !task.reviewNote
+    ) {
+      const recovered = await this.resumeQoderGoal(job, task);
+      task.workerResponse = appendBounded(
+        task.workerResponse ?? "",
+        recovered.output,
+        50_000,
+      );
+      if (recovered.completed) {
+        task.error = undefined;
+        await this.gradeTask(job, task);
+        return;
+      }
+      task.status = "needs_review";
+      task.error =
+        recovered.failure ?? "Unable to safely resume the persisted Qoder Goal.";
+      task.completedAt = new Date().toISOString();
+      return;
+    }
+
+    while (task.attempts < maximumAttempts) {
+      const retryEvidence = task.reviewNote;
+      task.reviewNote = undefined;
+      task.attempts += 1;
+      task.error = undefined;
+      task.graderResults = [];
+      task.target = "qoder";
+      const existingSession = Boolean(task.qoderSessionId);
+      task.qoderSessionId ??= randomUUID();
+      task.status = "running";
+      this.touch(job);
+      await this.persist();
+
+      const goal = qoderGoalObjective(task, retryEvidence);
+      const result = await this.runQoderGoal(job, task, goal, existingSession);
+      task.workerResponse = result.output;
+      if (!result.completed) {
+        const failure = result.failure ?? "Qoder Goal did not reach a completed state.";
+        task.error = failure;
+        if (task.attempts >= maximumAttempts) {
+          task.status = "needs_review";
+          task.completedAt = new Date().toISOString();
+          return;
+        }
+        task.reviewNote = failure;
+        this.touch(job);
+        await this.persist();
+        continue;
+      }
+
+      task.error = undefined;
+      const decision = await this.gradeTask(job, task);
+      if (decision !== "retry") return;
+    }
+  }
+
+  private async resumeQoderGoal(
+    job: LongrunJob,
+    task: LongrunTaskState,
+  ): Promise<{ completed: boolean; output: string; failure?: string }> {
+    const qoderCommand = this.resolveQoderCliCommand();
+    const sessionId = task.qoderSessionId;
+    if (!qoderCommand || !sessionId) {
+      return {
+        completed: false,
+        output: "",
+        failure: !qoderCommand
+          ? "Qoder CLI executable was not found."
+          : "Persisted Qoder Goal session id is missing.",
+      };
+    }
+    const command = qoderResumeCommand(qoderCommand, sessionId);
+    const before = await this.runManagedCommand(
+      job,
+      command,
+      Math.min(2, task.workerTimeoutMinutes ?? DEFAULT_WORKER_TIMEOUT_MINUTES),
+      "/goal status\n",
+      8_000,
+    );
+    if (!before.timedOut && before.exitCode === 0 && /\bNo active goal\b/i.test(before.output)) {
+      return { completed: true, output: before.output };
+    }
+    const beforeState = qoderGoalState(before.output);
+    if (beforeState === "complete") {
+      return { completed: true, output: before.output };
+    }
+    if (!["active", "paused"].includes(beforeState ?? "")) {
+      return {
+        completed: false,
+        output: before.output,
+        failure: "Unable to determine a resumable persisted Qoder Goal state.",
+      };
+    }
+
+    const resumed = await this.runManagedCommand(
+      job,
+      command,
+      task.workerTimeoutMinutes ?? DEFAULT_WORKER_TIMEOUT_MINUTES,
+      "/goal resume\n",
+      50_000,
+    );
+    const after = await this.runManagedCommand(
+      job,
+      command,
+      Math.min(2, task.workerTimeoutMinutes ?? DEFAULT_WORKER_TIMEOUT_MINUTES),
+      "/goal status\n",
+      8_000,
+    );
+    const output = appendBounded(
+      before.output,
+      appendBounded(resumed.output, after.output, 50_000),
+      50_000,
+    );
+    if (
+      !after.timedOut &&
+      after.exitCode === 0 &&
+      (/\bNo active goal\b/i.test(after.output) || qoderGoalState(after.output) === "complete")
+    ) {
+      return { completed: true, output };
+    }
+    return {
+      completed: false,
+      output,
+      failure: resumed.timedOut || resumed.exitCode !== 0
+        ? "Persisted Qoder Goal could not be resumed to completion."
+        : `Persisted Qoder Goal remains ${qoderGoalState(after.output) ?? "unproven"}.`,
+    };
+  }
+
+  private async runQoderGoal(
+    job: LongrunJob,
+    task: LongrunTaskState,
+    objective: string,
+    existingSession: boolean,
+  ): Promise<{ completed: boolean; output: string; failure?: string }> {
+    const qoderCommand = this.resolveQoderCliCommand();
+    if (!qoderCommand) {
+      return {
+        completed: false,
+        output: "",
+        failure: "Qoder CLI executable was not found.",
+      };
+    }
+    const sessionId = task.qoderSessionId;
+    if (!sessionId) {
+      return {
+        completed: false,
+        output: "",
+        failure: "Qoder Goal session id was not initialized.",
+      };
+    }
+
+    const sessionArgument = existingSession
+      ? `--resume ${sessionId}`
+      : `--session-id ${sessionId}`;
+    const command = [
+      shellCommandArg(qoderCommand),
+      "-p",
+      "--permission-mode auto",
+      "--output-format text",
+      sessionArgument,
+    ].join(" ");
+    const goalCommand =
+      `/goal ${singleLine(objective)} --turns ${task.goalTurns ?? DEFAULT_QODER_GOAL_TURNS}\n`;
+    const run = await this.runManagedCommand(
+      job,
+      command,
+      task.workerTimeoutMinutes ?? DEFAULT_WORKER_TIMEOUT_MINUTES,
+      goalCommand,
+      50_000,
+    );
+    if (run.timedOut || run.exitCode !== 0) {
+      return {
+        completed: false,
+        output: run.output,
+        failure: [
+          "Qoder Goal process did not complete successfully.",
+          `exitCode: ${run.exitCode ?? "unknown"}`,
+          `timedOut: ${run.timedOut}`,
+          run.output || "(no output)",
+        ].join("\n"),
+      };
+    }
+    if (/\bGoal closed\b/i.test(run.output)) {
+      return { completed: true, output: run.output };
+    }
+
+    const statusCommand = qoderResumeCommand(qoderCommand, sessionId);
+    const status = await this.runManagedCommand(
+      job,
+      statusCommand,
+      Math.min(2, task.workerTimeoutMinutes ?? DEFAULT_WORKER_TIMEOUT_MINUTES),
+      "/goal status\n",
+      8_000,
+    );
+    const combined = appendBounded(run.output, status.output, 50_000);
+    if (
+      !status.timedOut &&
+      status.exitCode === 0 &&
+      /\bNo active goal\b/i.test(status.output)
+    ) {
+      return { completed: true, output: combined };
+    }
+    const state = qoderGoalState(status.output);
+    return {
+      completed: state === "complete",
+      output: combined,
+      failure:
+        state
+          ? `Qoder Goal remains ${state} after the worker process returned.`
+          : "Unable to prove that the Qoder Goal completed; supervisor-safe fallback is retry/review.",
+    };
+  }
+
   private async evaluateWorkerResult(
     job: LongrunJob,
     task: LongrunTaskState,
@@ -609,6 +865,14 @@ export class PersonalLongruns {
     await this.persist();
     task.graderResults = await this.runGraders(job, task);
     if (task.graderResults.every((result) => result.exitCode === 0 && !result.timedOut)) {
+      if (task.requireSupervisorReview) {
+        task.status = "awaiting_review";
+        task.completedAt = new Date().toISOString();
+        task.error = undefined;
+        task.reviewNote =
+          "Worker self-verification and deterministic graders completed. Independent supervisor approval is still required.";
+        return "done";
+      }
       task.status = "passed";
       task.completedAt = new Date().toISOString();
       task.error = undefined;
@@ -749,14 +1013,30 @@ export class PersonalLongruns {
     task: LongrunTaskState,
     command: string,
   ): Promise<GraderResult> {
-    const timeoutMs =
-      (task.graderTimeoutMinutes ?? DEFAULT_GRADER_TIMEOUT_MINUTES) * 60_000;
+    return this.runManagedCommand(
+      job,
+      command,
+      task.graderTimeoutMinutes ?? DEFAULT_GRADER_TIMEOUT_MINUTES,
+      undefined,
+      MAX_GRADER_OUTPUT,
+    );
+  }
+
+  private async runManagedCommand(
+    job: LongrunJob,
+    command: string,
+    timeoutMinutes: number,
+    initialStdin: string | undefined,
+    maximumOutput: number,
+  ): Promise<GraderResult> {
+    const timeoutMs = timeoutMinutes * 60_000;
     const deadline = Date.now() + timeoutMs;
     let snapshot = await this.processes.start({
       workspaceId: job.workspaceId,
       command,
       cwd: job.workspaceRoot,
       workspaceRoot: job.workspaceRoot,
+      initialStdin,
       yieldTimeMs: 30_000,
       maxOutputTokens: 8_000,
     });
@@ -769,7 +1049,7 @@ export class PersonalLongruns {
         yieldTimeMs: 30_000,
         maxOutputTokens: 8_000,
       });
-      output = appendBounded(output, snapshot.output, MAX_GRADER_OUTPUT);
+      output = appendBounded(output, snapshot.output, maximumOutput);
       truncated = truncated || snapshot.outputTruncated;
     }
 
@@ -785,7 +1065,7 @@ export class PersonalLongruns {
         maxOutputTokens: 2_000,
       }).catch((): ProcessSnapshot => snapshot);
       snapshot = final;
-      output = appendBounded(output, final.output, MAX_GRADER_OUTPUT);
+      output = appendBounded(output, final.output, maximumOutput);
       truncated = truncated || final.outputTruncated;
     }
 
@@ -906,6 +1186,27 @@ function workerPrompt(task: LongrunTaskState): string {
   ].join("\n");
 }
 
+function qoderGoalObjective(task: LongrunTaskState, reviewEvidence?: string): string {
+  return [
+    "Complete this acceptance task end-to-end as the implementation worker.",
+    "Validate the real current state, fix every local actionable defect you find, rerun the smallest relevant checks, and keep iterating until your own completion audit finds no remaining local actionable work.",
+    "Do not commit, push, deploy, edit the formal acceptance ledger/status documents, or mark task checkboxes as passed; DevSpace and the web supervisor own final acceptance and authoritative acceptance records.",
+    "Return concrete evidence paths, commands, outputs, screenshots, and remaining blockers so the independent supervisor can verify your candidate without guessing.",
+    "If a genuine external dependency prevents final acceptance, finish every locally possible part and return EXTERNAL_BLOCKER with concrete evidence instead of fabricating a pass.",
+    "",
+    "Acceptance task:",
+    task.prompt,
+    ...(reviewEvidence
+      ? [
+          "",
+          "Independent supervisor feedback from the previous candidate:",
+          reviewEvidence,
+          "Address that evidence before declaring this candidate complete.",
+        ]
+      : []),
+  ].join("\n");
+}
+
 function jobScope(job: LongrunJob): LocalAgentWorkspaceScope {
   return { workspaceId: job.workspaceId, workspaceRoot: job.workspaceRoot };
 }
@@ -946,6 +1247,34 @@ function uniqueNonEmpty(values: readonly string[]): string[] {
   return Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
 }
 
+function singleLine(value: string): string {
+  return value.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function shellCommandArg(value: string): string {
+  if (/[\r\n\0]/.test(value)) throw new Error("Unsafe command argument.");
+  if (process.platform === "win32") {
+    if (value.includes('"')) throw new Error("Qoder executable path cannot contain a quote.");
+    return `"${value}"`;
+  }
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function qoderResumeCommand(qoderCommand: string, sessionId: string): string {
+  return [
+    shellCommandArg(qoderCommand),
+    "-p",
+    "--permission-mode auto",
+    "--output-format text",
+    `--resume ${sessionId}`,
+  ].join(" ");
+}
+
+function qoderGoalState(output: string): "active" | "paused" | "complete" | undefined {
+  const value = output.match(/\*\*Status:\*\*\s*(active|paused|complete)/i)?.[1];
+  return value?.toLowerCase() as "active" | "paused" | "complete" | undefined;
+}
+
 function defaultWriteModeForTargets(
   targets: readonly string[] | undefined,
 ): LocalAgentWriteMode {
@@ -973,7 +1302,8 @@ function jobView(job: LongrunJob): LongrunJob & { acceptanceReady: boolean } {
 }
 
 function acceptanceReady(job: LongrunJob): boolean {
-  return job.status === "awaiting_review" || job.status === "completed";
+  return job.status === "completed" ||
+    job.tasks.some((task) => task.status === "awaiting_review");
 }
 
 function formatAgentError(error: LocalAgentError): string {

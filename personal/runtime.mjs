@@ -78,19 +78,18 @@ export async function waitForRuntime(
   }
   throw new Error(errorMessage);
 }
-export async function stopIdleAgentDaemon(home = stateHome()) {
+export async function stopAgentDaemon(home = stateHome()) {
   const { config } = await runtimeConfig(home);
-  const snapshot = await agentDaemonSnapshot(config, 1_000);
-  if (snapshot.error) throw new Error(`Local agent daemon state is not trustworthy (${snapshot.error})`);
-  if (snapshot.activeTurns > 0) throw new Error('Local agent daemon has active turns; installation was not started');
-  if (!snapshot.available) return snapshot;
-  const result = await new LocalAgentClient({ stateDir: config.stateDir, requestTimeoutMs: 5_000 }).stop();
+  const client = new LocalAgentClient({ stateDir: config.stateDir, requestTimeoutMs: 5_000 });
+  const result = await client.stopForUpgrade();
+  if (result.isErr() && result.error?.code === 'DAEMON_UNAVAILABLE') return { available: false };
   if (result.isErr()) throw new Error(`Unable to stop local agent daemon (${result.error?.code ?? result.error?.message ?? 'unknown'})`);
   const probe = new LocalAgentClient({ stateDir: config.stateDir, requestTimeoutMs: 250 });
-  for (let i = 0; i < 20; i++) {
+  // Daemon shutdown can spend up to 10 seconds closing provider runtimes.
+  for (let i = 0; i < 48; i++) {
     await sleep(250);
     const current = await probe.status();
-    if (current.isErr() && current.error?.code === 'DAEMON_UNAVAILABLE') return { ...snapshot, stopped: true };
+    if (current.isErr() && current.error?.code === 'DAEMON_UNAVAILABLE') return { available: true, stopped: true };
   }
   throw new Error('Local agent daemon accepted stop but did not exit');
 }

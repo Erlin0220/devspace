@@ -7,10 +7,11 @@ import { createInterface } from 'node:readline';
 import { atomicJson, readJson, stateHome, statePath } from '../state.mjs';
 import { approvedProjectRoot, readPersonalAuth, readPersonalConfig } from '../config.mjs';
 import { runtimeSnapshot, waitForRuntime } from '../runtime.mjs';
+import { resolveQoderCommand } from '../../dist/local-agent-qoder.js';
 import { discoverStable, prepareStable } from '../upgrade.mjs';
 import { createDesktopController } from './controller.mjs';
 import { startLocalControl } from './local-control.mjs';
-import { chooseFolder, installRecord, jobAction, jobStatus, openBrowser, openLogs, registerDesktopEntries, registerJobs, serviceComponents } from './platform.mjs';
+import { chooseFolder, installRecord, jobAction, jobStatus, launchQoderCli, openBrowser, openLogs, registerDesktopEntries, registerJobs, serviceComponents } from './platform.mjs';
 import semver from 'semver';
 
 const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -102,6 +103,13 @@ export function operations(home = stateHome()) {
       catch (error) { await stopReady(home).catch(() => {}); await atomicJson(statePath(home, 'personal'), before); if (!paused) await startReady(home); throw error; }
     },
     'choose-folder': async input => chooseFolder({ ...input, projectRoot: (await status(home)).projectRoot }),
+    'launch-qoder': async () => {
+      const current = await status(home);
+      if (!current.projectRoot) throw new Error('请先设置项目目录');
+      const command = resolveQoderCommand();
+      if (!command) throw new Error('未找到 Qoder CLI，请先安装 Qoder CLI');
+      await launchQoderCli(command, current.projectRoot);
+    },
     logs: () => openLogs(home),
     diagnostics: async () => {
       const safe = async operation => operation().catch(error => ({ error: error.message }));
@@ -153,6 +161,7 @@ export function trayState(snapshot) {
   return { status: snapshot.status, iconStatus: snapshot.status, tooltip: `Personal DevSpace · ${snapshot.activity ?? (snapshot.paused ? '已暂停' : ready ? '运行中' : '需要检查')}`,
     menu: [item('state', ready ? 'Runtime 正常运行' : snapshot.paused ? '服务已暂停' : 'Runtime 未就绪', '', false),
       item('settings', '打开控制中心', 'open', true), item('toggle', ready ? '暂停服务' : '恢复服务', ready ? 'suspend' : 'resume'),
+      item('qoder', '启动 Qoder CLI', 'launch-qoder', true),
       item('restart', '重启 Runtime', 'restart'), item('updates', '检查官方稳定版', 'update-check'),
       item('logs', '打开日志', 'logs', true), item('exit', '停止服务并退出', 'exit')] };
 }

@@ -108,28 +108,38 @@ remaining need and regression, not just conflict markers. Conflicts retain the
 candidate for normal `git rebase --continue` or `--abort`; the running app stays put.
 
 `replay` rehearses this exact path against the current official stable, even when
-there is no newer release. It does not invent a future version. Native binaries
-can be reused from a private, source-digest-and-artifact-hash-checked build cache;
-a changed native source/lock/build script requires rebuilding. Windows source
-builds need Rust 1.85.1 and Zig (or explicit `CARGO`/`ZIG` paths). macOS uses system
-Swift/AppKit; it does not bundle a browser framework.
+there is no newer release. It is an explicit compatibility check for upstream
+baseline/rebase work rather than a mandatory step for every Personal release. It
+does not invent a future version. Native binaries can be reused from a private,
+source-digest-and-artifact-hash-checked build cache; a changed native
+source/lock/build script requires rebuilding. Windows source builds need Rust
+1.85.1 and Zig (or explicit `CARGO`/`ZIG` paths). macOS uses system Swift/AppKit;
+it does not bundle a browser framework.
 
-After making and committing changes, use the deterministic release-check action to
-generate a fresh tested candidate manifest and rehearse the current-stable replay:
+During development, run the smallest affected checks instead of repeating the
+entire release suite. After making and committing changes, use the deterministic
+release-check action once to run the full verification pass and generate a fresh
+tested candidate manifest:
 
 ```text
 npm run personal:release-check
 node personal/bin.mjs install C:\project\DevSpace
 ```
 
+Use `npm run personal:replay` separately when changing the recorded upstream
+baseline, the replay/rebase path, or when an explicit replayability rehearsal is
+needed. Use `npm run personal:live` when native desktop behavior, process
+ownership/lifecycle, installer/shortcut behavior or another actual-platform
+native contract changed.
+
 The install command verifies the exact committed revision and payload hash, then
 hands off to an independent OS installer **and waits for its terminal result**.
 The OS installer is the authoritative full verification boundary; the queueing
 process validates the frozen candidate identity. It stages immutable application
 bytes and locked production dependencies while the old Runtime remains available,
-refuses a switch while shell commands or subagent turns are active, stops an idle
-agent daemon before replacing Runtime code, and checks the candidate's owner,
-version and overlay commit before committing. Installation never re-queries the
+then force-stops the owned Runtime and agent daemon, including active shell
+commands or subagent turns, before replacing Runtime code. It checks the
+candidate's owner, version and overlay commit before committing. Installation never re-queries the
 network to decide whether an already reviewed candidate is still “latest”; a later
 release belongs to the next update check. A failed core activation restores the
 previous runtime; a desktop-only failure is reported as degraded, not a core rollback.
@@ -172,9 +182,10 @@ side-effect repetition, control authentication/origin/host/port isolation and
 install rollback. `personal/tests/baseline-probe.ts` and `transport-probe.ts` can
 run against a pristine official worktree before deciding whether to retain a fix.
 
-Native compilation/PE checks do not prove that a tray is visible. Windows live
-acceptance is the deterministic `npm run personal:live` action; it always attempts
-fixture cleanup after prepare/lifecycle/verify. macOS source support must be
-reported separately from native acceptance;
+Native compilation/PE checks do not prove that a tray is visible. When a change
+requires actual-platform native acceptance, Windows uses the deterministic
+`npm run personal:live` action; it always attempts fixture cleanup after
+prepare/lifecycle/verify. macOS source support must be reported separately from
+native acceptance;
 never infer macOS success from Windows tests. Linux provides user services and the
 Control Center, not an untested Windows-style native tray.

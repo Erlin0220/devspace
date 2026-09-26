@@ -140,6 +140,52 @@ export class LocalAgentClient {
     return decodeRequestResult(result, "daemon.stop", decodeDaemonStatus);
   }
 
+  async stopForUpgrade(): Promise<BetterResult<void, AgentDaemonError>> {
+    const authToken = this.existingAuthTokenResult("daemon.stop");
+    if (authToken.isErr()) return Result.err(authToken.error);
+    if (!authToken.value) {
+      return Result.err(new AgentDaemonUnavailableError({
+        code: "DAEMON_UNAVAILABLE",
+        operation: "daemon.stop",
+        retryable: true,
+        message: "Local agent daemon is not running.",
+      }));
+    }
+    const token = authToken.value;
+
+    const sendStop = (protocolVersion: number) => sendRequest(this.endpoint, {
+      requestId: randomUUID(),
+      protocolVersion,
+      authToken: token,
+      method: "daemon.stop",
+      params: {},
+    }, this.requestTimeoutMs);
+    let response = await sendStop(LOCAL_AGENT_DAEMON_PROTOCOL_VERSION);
+    if (response.isErr()) return Result.err(response.error);
+    if (response.value.ok) return Result.ok(undefined);
+
+    let error = decodeRemoteError(response.value.error, "daemon.stop");
+    if (
+      error.code === "DAEMON_PROTOCOL_MISMATCH"
+      && response.value.protocolVersion > 0
+      && response.value.protocolVersion < LOCAL_AGENT_DAEMON_PROTOCOL_VERSION
+    ) {
+      response = await sendStop(response.value.protocolVersion);
+      if (response.isErr()) return Result.err(response.error);
+      if (response.value.ok) return Result.ok(undefined);
+      error = decodeRemoteError(response.value.error, "daemon.stop");
+    }
+
+    if (isAgentDaemonError(error)) return Result.err(error);
+    return Result.err(new AgentDaemonInvalidResponseError({
+      code: "DAEMON_INVALID_RESPONSE",
+      operation: "daemon.stop",
+      retryable: false,
+      cause: error,
+      message: "Local agent daemon returned an invalid daemon-control error.",
+    }));
+  }
+
   async logs(lines = 200): Promise<BetterResult<string, AgentDaemonError>> {
     const result = await this.requestExisting("daemon.logs", { lines });
     return decodeRequestResult(result, "daemon.logs", decodeDaemonLogs);

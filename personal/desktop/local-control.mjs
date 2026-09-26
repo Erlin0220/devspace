@@ -15,7 +15,7 @@ const assets = {
   '/personal-devspace-logo.png': ['../assets/personal-devspace-logo.png', 'image/png'],
   '/favicon.ico': ['../assets/personal-devspace.ico', 'image/x-icon'],
 };
-const actions = new Set(['check', 'suspend', 'resume', 'restart', 'repair', 'project-root', 'choose-folder', 'logs', 'update-check', 'update-prepare', 'update-apply']);
+const actions = new Set(['check', 'suspend', 'resume', 'restart', 'repair', 'project-root', 'choose-folder', 'launch-qoder', 'logs', 'update-check', 'update-prepare', 'update-apply']);
 const failure = (message, status = 400) => Object.assign(new Error(message), { status });
 
 async function readBody(request) {
