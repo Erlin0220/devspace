@@ -1713,7 +1713,11 @@ export interface CreateServerOptions {
   incomingArtifactAdapters?: readonly IncomingArtifactAdapter[];
   // Personal entrypoint seams. Upstream CLI/config and default behavior stay unchanged.
   verifyAccessToken?: (token: string) => ReturnType<SingleUserOAuthProvider["verifyAccessToken"]> | undefined;
-  registerTools?: (server: McpServer, workspaces: WorkspaceRegistry) => void;
+  registerTools?: (
+    server: McpServer,
+    workspaces: WorkspaceRegistry,
+    processSessions: ProcessSessionManager,
+  ) => void;
   dispose?: () => Promise<void>;
   createEventStore?: () => import("@modelcontextprotocol/sdk/server/streamableHttp.js").EventStore & { close(): void };
   mcpSessionRetention?: { idleTimeoutMs: number; cleanupIntervalMs: number };
@@ -1934,7 +1938,7 @@ export function createServer(
           options.commandRecoveryInstruction,
           resolveSubagentsConfig,
         );
-        options.registerTools?.(server, workspaces);
+        options.registerTools?.(server, workspaces, processSessions);
         await server.connect(transport);
       } else {
         sendJsonRpcError(res, 400, -32000, "No valid MCP session");

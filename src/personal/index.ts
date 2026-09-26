@@ -4,8 +4,13 @@ import type { CreateServerOptions } from "../server.js";
 import { PersonalCodeGraph, type CodeGraphOptions } from "./codegraph.js";
 import { ReplayPool } from "./replay.js";
 import { PersonalSubagents } from "./subagents.js";
+import { PersonalLongruns } from "./longrun.js";
 
-export interface PersonalExtensionsConfig { apiToken?: string; codegraph?: CodeGraphOptions }
+export interface PersonalExtensionsConfig {
+  apiToken?: string;
+  codegraph?: CodeGraphOptions;
+  stateHome?: string;
+}
 
 const PERSONAL_MCP_SESSION_RETENTION = {
   idleTimeoutMs: 60 * 60_000,
@@ -22,6 +27,7 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
   const expected = personal.apiToken === undefined ? undefined : createHash("sha256").update(personal.apiToken).digest();
   const codegraph = new PersonalCodeGraph(personal.codegraph ?? {});
   const subagents = new PersonalSubagents(config);
+  let longruns: PersonalLongruns | undefined;
   const replay = new ReplayPool();
   return {
     verifyAccessToken: token => {
@@ -31,15 +37,25 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
       return Promise.resolve({ token, clientId: "personal-api-token", scopes: [...config.oauth.scopes],
         expiresAt: Math.floor(Date.now() / 1000) + 60, resource: new URL("/mcp", config.publicBaseUrl) });
     },
-    registerTools: (server, workspaces) => {
+    registerTools: (server, workspaces, processSessions) => {
       codegraph.register(server, workspaces);
       subagents.register(server, workspaces);
+      longruns ??= new PersonalLongruns(
+        config,
+        processSessions,
+        personal.stateHome ?? config.stateDir,
+      );
+      longruns.register(server, workspaces);
     },
     // ChatGPT may abandon transports without closing them. Bound Personal retention
     // until upstream ships a hard session-capacity policy; upstream defaults stay unchanged.
     mcpSessionRetention: PERSONAL_MCP_SESSION_RETENTION,
     commandRecoveryInstruction: PERSONAL_COMMAND_RECOVERY_INSTRUCTION,
     createEventStore: () => replay.createStore(),
-    dispose: async () => { replay.close(); await codegraph.close(); },
+    dispose: async () => {
+      replay.close();
+      await longruns?.close();
+      await codegraph.close();
+    },
   };
 }

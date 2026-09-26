@@ -32,7 +32,7 @@
     "personal:replay": "node personal/upgrade.mjs replay",
     "personal:release-check": "npm run personal:verify && npm run personal:replay",
     "personal:live": "node personal/live-acceptance.mjs",
-    "test:personal": "node --import tsx --test personal/tests/core.test.ts personal/tests/desktop.test.mjs personal/tests/upgrade.test.mjs personal/tests/native.test.mjs personal/tests/install.test.mjs",
+    "test:personal": "node --import tsx --test personal/tests/core.test.ts personal/tests/longrun.test.ts personal/tests/desktop.test.mjs personal/tests/upgrade.test.mjs personal/tests/native.test.mjs personal/tests/install.test.mjs",
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && npm run build:app && tsc -p tsconfig.build.json",
     "build:app": "vite build",
