@@ -102,7 +102,13 @@ export async function startRuntime(home = stateHome()) {
   const runtimeEnv = runtimeEnvironment(personal);
   const resolveSubagentsConfig = () => loadConfig(runtimeEnv).subagents;
   const running = createServer(config, {
-    ...personalExtensions(config, { ...auth, codegraph: personal.codegraph, stateHome: home }),
+    ...personalExtensions(config, {
+      ...auth,
+      codegraph: personal.codegraph,
+      stateHome: home,
+      runtimeEnv,
+      resolveSubagentsConfig,
+    }),
     resolveSubagentsConfig,
   });
   running.app.get('/personal-healthz', (_request, response) => response.json({ name: 'personal-devspace', owner: ownerId(home), version: baseline.version,

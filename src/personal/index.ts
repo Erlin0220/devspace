@@ -4,12 +4,16 @@ import type { CreateServerOptions } from "../server.js";
 import { PersonalCodeGraph, type CodeGraphOptions } from "./codegraph.js";
 import { ReplayPool } from "./replay.js";
 import { PersonalSubagents } from "./subagents.js";
+import { PersonalSubagentConfig } from "./subagent-config.js";
 import { PersonalLongruns } from "./longrun.js";
+import type { SubagentsConfig } from "../local-agent-config.js";
 
 export interface PersonalExtensionsConfig {
   apiToken?: string;
   codegraph?: CodeGraphOptions;
   stateHome?: string;
+  runtimeEnv?: NodeJS.ProcessEnv;
+  resolveSubagentsConfig?: () => SubagentsConfig;
 }
 
 const PERSONAL_MCP_SESSION_RETENTION = {
@@ -27,6 +31,11 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
   const expected = personal.apiToken === undefined ? undefined : createHash("sha256").update(personal.apiToken).digest();
   const codegraph = new PersonalCodeGraph(personal.codegraph ?? {});
   const subagents = new PersonalSubagents(config);
+  const resolveSubagentsConfig = personal.resolveSubagentsConfig ?? (() => config.subagents);
+  const subagentConfig = new PersonalSubagentConfig(
+    personal.runtimeEnv ?? process.env,
+    resolveSubagentsConfig,
+  );
   let longruns: PersonalLongruns | undefined;
   const replay = new ReplayPool();
   return {
@@ -40,10 +49,13 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
     registerTools: (server, workspaces, processSessions) => {
       codegraph.register(server, workspaces);
       subagents.register(server, workspaces);
+      subagentConfig.register(server);
       longruns ??= new PersonalLongruns(
         config,
         processSessions,
         personal.stateHome ?? config.stateDir,
+        undefined,
+        resolveSubagentsConfig,
       );
       longruns.register(server, workspaces);
     },

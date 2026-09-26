@@ -4,6 +4,25 @@ import type { LocalAgentProvider } from "./local-agent-profiles.js";
 
 export type LocalAgentWriteMode = "read_only" | "allowed" | "full_access";
 
+const ALL_WRITE_MODES: readonly LocalAgentWriteMode[] = [
+  "read_only",
+  "allowed",
+  "full_access",
+];
+
+export function localAgentProviderWriteModes(
+  provider: LocalAgentProvider,
+): readonly LocalAgentWriteMode[] {
+  return provider === "agy" ? ["allowed", "full_access"] : ALL_WRITE_MODES;
+}
+
+export function localAgentProviderSupportsWriteMode(
+  provider: LocalAgentProvider,
+  writeMode: LocalAgentWriteMode | undefined,
+): boolean {
+  return localAgentProviderWriteModes(provider).includes(writeMode ?? "allowed");
+}
+
 export interface LocalAgentRunInput {
   prompt: string;
   workspaceRoot: string;

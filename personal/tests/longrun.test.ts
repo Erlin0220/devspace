@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { Result } from "better-result";
 import type { ServerConfig } from "../../src/config.js";
+import type { SubagentsConfig } from "../../src/local-agent-config.js";
 import type { StartLocalAgentInput } from "../../src/local-agent-manager.js";
 import type { LocalAgentRecord, LocalAgentWorkspaceScope } from "../../src/local-agent-store.js";
 import { PersonalLongruns } from "../../src/personal/longrun.js";
@@ -18,6 +19,11 @@ function config(): ServerConfig {
         { id: "qoder", enabled: true },
         { id: "agy", enabled: true },
       ],
+      routing: {
+        default: ["qoder", "codex", "agy"],
+        readOnly: ["qoder", "codex"],
+        writable: ["qoder", "codex", "agy"],
+      },
     },
   } as ServerConfig;
 }
@@ -73,12 +79,16 @@ class FakeProcesses {
   readonly commands: string[] = [];
   readonly exits: number[];
 
-  constructor(exits: number[] = []) {
+  constructor(
+    exits: number[] = [],
+    private readonly onStart?: (command: string) => void,
+  ) {
     this.exits = [...exits];
   }
 
   async start(input: { command: string }) {
     this.commands.push(input.command);
+    this.onStart?.(input.command);
     const exitCode = this.exits.length > 0 ? this.exits.shift()! : 0;
     return {
       output: exitCode === 0 ? "grader ok" : "grader failed",
@@ -110,11 +120,25 @@ async function eventually<T>(
   }
 }
 
-async function fixture(exits: number[] = []) {
+async function fixture(
+  exits: number[] = [],
+  options: {
+    config?: ServerConfig;
+    resolveSubagentsConfig?: () => SubagentsConfig;
+    onGraderStart?: (command: string) => void;
+  } = {},
+) {
   const home = await mkdtemp(join(tmpdir(), "devspace-longrun-"));
   const agents = new FakeAgentClient();
-  const processes = new FakeProcesses(exits);
-  const longruns = new PersonalLongruns(config(), processes as never, home, agents as never);
+  const baseConfig = options.config ?? config();
+  const processes = new FakeProcesses(exits, options.onGraderStart);
+  const longruns = new PersonalLongruns(
+    baseConfig,
+    processes as never,
+    home,
+    agents as never,
+    options.resolveSubagentsConfig ?? (() => baseConfig.subagents),
+  );
   return {
     home,
     agents,
@@ -147,6 +171,7 @@ test("long-run dispatcher continuously drains tasks across different allowed wor
           prompt: "run second bounded check",
           targets: ["agy"],
           dependsOn: ["qwen-task"],
+          writeMode: "allowed",
           graderCommands: ["check-second"],
         },
       ],
@@ -160,6 +185,105 @@ test("long-run dispatcher continuously drains tasks across different allowed wor
     assert.deepEqual(f.agents.starts.map((input) => input.target), ["qoder", "agy"]);
     assert.deepEqual(f.processes.commands, ["check-first", "check-second"]);
     assert.deepEqual(completed.tasks.map((task) => task.status), ["passed", "passed"]);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("runtime routing config prefers qoder before other enabled providers", async () => {
+  const f = await fixture();
+  try {
+    const job = await f.longruns.createJob({
+      workspaceId: "ws_test",
+      workspaceRoot: "C:\project\fixture",
+      title: "runtime routing",
+      tasks: [{
+        id: "default-worker",
+        prompt: "run a bounded read-only check",
+        graderCommands: ["verify-default"],
+      }],
+    });
+    const completed = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "completed",
+    );
+    assert.equal(f.agents.starts[0]?.target, "qoder");
+    assert.equal(completed.tasks[0]?.target, "qoder");
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("long-run resolves fresh runtime routing before each newly-dispatched task", async () => {
+  const baseConfig = config();
+  let current = baseConfig.subagents;
+  const f = await fixture([], {
+    config: baseConfig,
+    resolveSubagentsConfig: () => current,
+    onGraderStart: (command) => {
+      if (command !== "check-first") return;
+      current = {
+        ...current,
+        routing: {
+          ...current.routing,
+          writable: ["codex", "qoder", "agy"],
+        },
+      };
+    },
+  });
+  try {
+    const job = await f.longruns.createJob({
+      workspaceId: "ws_test",
+      workspaceRoot: "C:\project\fixture",
+      title: "dynamic routing",
+      tasks: [
+        {
+          id: "first",
+          prompt: "first writable task",
+          writeMode: "allowed",
+          graderCommands: ["check-first"],
+        },
+        {
+          id: "second",
+          prompt: "second writable task",
+          writeMode: "allowed",
+          dependsOn: ["first"],
+          graderCommands: ["check-second"],
+        },
+      ],
+    });
+    const completed = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "completed",
+    );
+    assert.deepEqual(f.agents.starts.map((input) => input.target), ["qoder", "codex"]);
+    assert.equal(completed.defaultTargets, undefined);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("read-only tasks skip providers that do not support that write mode", async () => {
+  const f = await fixture();
+  try {
+    const job = await f.longruns.createJob({
+      workspaceId: "ws_test",
+      workspaceRoot: "C:\project\fixture",
+      title: "read only compatibility",
+      defaultTargets: ["agy", "qoder", "codex"],
+      tasks: [{
+        id: "read-only",
+        prompt: "inspect without writes",
+        writeMode: "read_only",
+        graderCommands: ["verify-read-only"],
+      }],
+    });
+    const completed = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "completed",
+    );
+    assert.equal(f.agents.starts[0]?.target, "qoder");
+    assert.equal(completed.tasks[0]?.target, "qoder");
   } finally {
     await f.cleanup();
   }

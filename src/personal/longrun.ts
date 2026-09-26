@@ -13,7 +13,15 @@ import {
   toAgentErrorPayload,
   type LocalAgentError,
 } from "../local-agent-errors.js";
-import type { LocalAgentWriteMode } from "../local-agent-runtime.js";
+import {
+  localAgentProviderSupportsWriteMode,
+  type LocalAgentWriteMode,
+} from "../local-agent-runtime.js";
+import {
+  subagentRoutingTargets,
+  type SubagentsConfig,
+} from "../local-agent-config.js";
+import { isLocalAgentProvider } from "../local-agent-profiles.js";
 import type {
   LocalAgentRecord,
   LocalAgentWorkspaceScope,
@@ -79,7 +87,7 @@ interface LongrunJob {
   workspaceId: string;
   workspaceRoot: string;
   status: LongrunJobStatus;
-  defaultTargets: string[];
+  defaultTargets?: string[];
   tasks: LongrunTaskState[];
   activeTaskId?: string;
   pauseRequested: boolean;
@@ -136,6 +144,7 @@ export class PersonalLongruns {
     private readonly processes: LongrunProcessManager,
     stateHome: string,
     client: LongrunAgentClient = createLocalAgentClient(config),
+    private readonly resolveSubagentsConfig: () => SubagentsConfig = () => config.subagents,
   ) {
     this.client = client;
     this.statePath = join(stateHome, "longrun-jobs.json");
@@ -152,12 +161,12 @@ export class PersonalLongruns {
       {
         title: "Start durable DevSpace job",
         description:
-          "Create a durable queue of bounded subagent tasks and start draining it continuously. Tasks may use different advertised profiles/providers; targets are an ordered allowlist, not a fixed Luna dependency. The dispatcher keeps taking runnable tasks without waiting for the hourly supervisor. Deterministic grader commands run outside the worker; tasks without deterministic graders require supervisor review and are never self-certified.",
+          "Create a durable queue of bounded subagent tasks and start draining it continuously. Unless a task/job pins targets, each newly-dispatched task resolves the latest runtime subagent routing config. Deterministic grader commands run outside the worker; tasks without deterministic graders require supervisor review and are never self-certified.",
         inputSchema: {
           workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
           title: z.string().min(1).max(200),
           defaultTargets: z.array(z.string().min(1)).min(1).max(10).optional().describe(
-            "Ordered fallback targets for tasks that omit targets. Use advertised profiles/providers such as codex, qoder, or agy. If omitted, enabled providers from DevSpace config are used in configured order.",
+            "Optional job-level ordered target override. If omitted, each new task resolves current runtime routing.",
           ),
           tasks: z.array(taskSchema).min(1).max(100),
         },
@@ -282,12 +291,9 @@ export class PersonalLongruns {
       );
     }
 
-    const defaultTargets = uniqueNonEmpty(
-      input.defaultTargets ?? this.enabledProviderTargets(),
-    );
-    if (defaultTargets.length === 0) {
-      throw new Error("No long-run worker targets are configured.");
-    }
+    const defaultTargets = input.defaultTargets
+      ? uniqueNonEmpty(input.defaultTargets)
+      : undefined;
 
     const now = new Date().toISOString();
     const job: LongrunJob = {
@@ -296,7 +302,7 @@ export class PersonalLongruns {
       workspaceId: input.workspaceId,
       workspaceRoot: input.workspaceRoot,
       status: "running",
-      defaultTargets,
+      ...(defaultTargets ? { defaultTargets } : {}),
       tasks: input.tasks.map((task) => ({
         ...task,
         targets: task.targets ? uniqueNonEmpty(task.targets) : undefined,
@@ -596,7 +602,25 @@ export class PersonalLongruns {
     job: LongrunJob,
     task: LongrunTaskState,
   ): Promise<LocalAgentRecord | undefined> {
-    const targets = uniqueNonEmpty(task.targets ?? job.defaultTargets);
+    const runtimeTargets = subagentRoutingTargets(
+      this.resolveSubagentsConfig(),
+      task.writeMode,
+    );
+    const configuredTargets = uniqueNonEmpty(
+      task.targets ?? job.defaultTargets ?? runtimeTargets,
+    );
+    const targets = configuredTargets.filter(
+      (target) =>
+        !isLocalAgentProvider(target) ||
+        localAgentProviderSupportsWriteMode(target, task.writeMode),
+    );
+    if (targets.length === 0) {
+      task.status = "needs_review";
+      task.error = configuredTargets.length === 0
+        ? "No enabled worker target is available in the current runtime routing configuration."
+        : `No configured worker target supports write mode ${task.writeMode ?? "allowed"}. Configured targets: ${configuredTargets.join(", ")}.`;
+      return undefined;
+    }
     const failures: string[] = [];
     for (const target of targets) {
       let result = await this.client.start({
@@ -763,13 +787,6 @@ export class PersonalLongruns {
       }
     }
     assertAcyclic(tasks);
-  }
-
-  private enabledProviderTargets(): string[] {
-    if (!this.config.subagents.enabled) return [];
-    return this.config.subagents.providers
-      .filter((provider) => provider.enabled)
-      .map((provider) => provider.id);
   }
 
   private requireJob(jobId: string): LongrunJob {

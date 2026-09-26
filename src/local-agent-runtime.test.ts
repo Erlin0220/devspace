@@ -7,6 +7,10 @@ import {
   type AgentProviderError,
 } from "./local-agent-errors.js";
 import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
+import {
+  localAgentProviderSupportsWriteMode,
+  localAgentProviderWriteModes,
+} from "./local-agent-runtime.js";
 import type {
   LocalAgentDriver,
   LocalAgentRunInput,
@@ -14,6 +18,10 @@ import type {
   LocalAgentRuntime,
   LocalAgentRuntimeContext,
 } from "./local-agent-runtime.js";
+
+assert.deepEqual(localAgentProviderWriteModes("agy"), ["allowed", "full_access"]);
+assert.equal(localAgentProviderSupportsWriteMode("agy", "read_only"), false);
+assert.equal(localAgentProviderSupportsWriteMode("qoder", "read_only"), true);
 
 const context: LocalAgentRuntimeContext = {
   agentId: "agt_test",
