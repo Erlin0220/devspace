@@ -37,6 +37,7 @@ type LongrunJobStatus =
   | "pausing"
   | "paused"
   | "completed"
+  | "awaiting_review"
   | "needs_review"
   | "canceling"
   | "cancelled";
@@ -45,6 +46,7 @@ type LongrunTaskStatus =
   | "running"
   | "grading"
   | "passed"
+  | "awaiting_review"
   | "needs_review"
   | "failed";
 
@@ -196,7 +198,7 @@ export class PersonalLongruns {
       {
         title: "Get durable DevSpace job",
         description:
-          "Read a long-running queue, including task states, worker target/agent ids, deterministic grader evidence, review requirements, and current progress.",
+          "Read a long-running queue, including task states, worker target/agent ids, deterministic grader evidence, explicit awaiting-review state, acceptanceReady, and current progress.",
         inputSchema: { jobId: jobIdSchema },
         outputSchema: resultOutputSchema,
         annotations: {
@@ -214,7 +216,7 @@ export class PersonalLongruns {
       {
         title: "List durable DevSpace jobs",
         description:
-          "List persisted long-running jobs and compact progress counts. Use this from a scheduled supervisor to find work that is running, paused, or waiting for review.",
+          "List persisted long-running jobs and compact progress counts with an acceptanceReady signal. Use this from a scheduled supervisor to find work that is running, paused, failed, or ready for independent review.",
         inputSchema: {},
         outputSchema: resultOutputSchema,
         annotations: {
@@ -329,7 +331,7 @@ export class PersonalLongruns {
 
   async getJob(jobId: string): Promise<LongrunJob> {
     await this.ensureLoaded();
-    return cloneJob(this.requireJob(jobId));
+    return jobView(this.requireJob(jobId));
   }
 
   async listJobs(): Promise<ReturnType<typeof jobSummary>[]> {
@@ -374,7 +376,7 @@ export class PersonalLongruns {
     await this.ensureLoaded();
     const job = this.requireJob(jobId);
     const task = this.requireTask(job, taskId);
-    if (!["needs_review", "failed"].includes(task.status)) {
+    if (!["awaiting_review", "needs_review", "failed"].includes(task.status)) {
       throw new Error(`Task ${taskId} is not waiting for supervisor review.`);
     }
 
@@ -459,7 +461,9 @@ export class PersonalLongruns {
         job.activeTaskId = undefined;
         job.status = job.tasks.every((candidate) => candidate.status === "passed")
           ? "completed"
-          : "needs_review";
+          : job.tasks.some((candidate) => candidate.status === "awaiting_review")
+            ? "awaiting_review"
+            : "needs_review";
         this.touch(job);
         await this.persist();
         return;
@@ -519,13 +523,27 @@ export class PersonalLongruns {
           jobScope(job),
         );
         if (continued.isErr()) {
+          const failure = formatAgentError(continued.error);
+          const payload = toAgentErrorPayload(continued.error);
+          if (payload.retryable && task.attempts < (task.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)) {
+            task.status = "running";
+            task.error = failure;
+            task.reviewNote = failure;
+            await sleep(POLL_INTERVAL_MS);
+            continue;
+          }
           task.status = "needs_review";
-          task.error = formatAgentError(continued.error);
+          task.error = failure;
+          task.completedAt = new Date().toISOString();
           return;
         }
         record = continued.value;
       } else {
         const started = await this.startWithFallback(job, task);
+        if (started === "retry") {
+          await sleep(POLL_INTERVAL_MS);
+          continue;
+        }
         if (!started) return;
         record = started;
       }
@@ -550,8 +568,19 @@ export class PersonalLongruns {
   ): Promise<"done" | "retry"> {
     task.workerResponse = terminal.latestResponse;
     if (terminal.status !== "idle") {
+      const failure = formatAgentRecordError(terminal);
+      if (
+        terminal.errorRetryable === true &&
+        task.attempts < (task.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)
+      ) {
+        task.status = "running";
+        task.error = failure;
+        task.reviewNote = failure;
+        task.completedAt = undefined;
+        return "retry";
+      }
       task.status = "needs_review";
-      task.error = terminal.error ?? `Worker ended with status ${terminal.status}.`;
+      task.error = failure;
       task.completedAt = new Date().toISOString();
       return "done";
     }
@@ -564,8 +593,9 @@ export class PersonalLongruns {
   ): Promise<"done" | "retry"> {
     const graders = task.graderCommands ?? [];
     if (graders.length === 0) {
-      task.status = "needs_review";
-      task.error =
+      task.status = "awaiting_review";
+      task.error = undefined;
+      task.reviewNote =
         "No deterministic grader was supplied. Supervisor review is required; worker self-certification is not accepted.";
       task.completedAt = new Date().toISOString();
       return "done";
@@ -601,7 +631,7 @@ export class PersonalLongruns {
   private async startWithFallback(
     job: LongrunJob,
     task: LongrunTaskState,
-  ): Promise<LocalAgentRecord | undefined> {
+  ): Promise<LocalAgentRecord | "retry" | undefined> {
     const runtimeTargets = subagentRoutingTargets(
       this.resolveSubagentsConfig(),
       task.writeMode,
@@ -622,6 +652,7 @@ export class PersonalLongruns {
       return undefined;
     }
     const failures: string[] = [];
+    let retryableFailure = false;
     for (const target of targets) {
       let result = await this.client.start({
         target,
@@ -646,14 +677,24 @@ export class PersonalLongruns {
 
       const payload = toAgentErrorPayload(result.error);
       failures.push(`${target}: ${payload.code}: ${payload.message}`);
+      retryableFailure ||= payload.retryable === true;
       if (!SAFE_START_FALLBACK_CODES.has(payload.code)) {
         task.status = "needs_review";
         task.error = failures.join("\n");
+        task.completedAt = new Date().toISOString();
         return undefined;
       }
     }
+    const failure = `No allowed worker target could start.\n${failures.join("\n")}`;
+    if (retryableFailure && task.attempts < (task.maxAttempts ?? DEFAULT_MAX_ATTEMPTS)) {
+      task.status = "running";
+      task.error = failure;
+      task.reviewNote = failure;
+      return "retry";
+    }
     task.status = "needs_review";
-    task.error = `No allowed worker target could start.\n${failures.join("\n")}`;
+    task.error = failure;
+    task.completedAt = new Date().toISOString();
     return undefined;
   }
 
@@ -667,8 +708,15 @@ export class PersonalLongruns {
     while (Date.now() < deadline) {
       const result = await this.client.get(agentId, jobScope(job));
       if (result.isErr()) {
+        const payload = toAgentErrorPayload(result.error);
+        if (payload.retryable) {
+          task.error = formatAgentError(result.error);
+          await sleep(POLL_INTERVAL_MS);
+          continue;
+        }
         task.status = "needs_review";
         task.error = formatAgentError(result.error);
+        task.completedAt = new Date().toISOString();
         return undefined;
       }
       if (["idle", "error", "stopped"].includes(result.value.status)) return result.value;
@@ -865,6 +913,7 @@ function jobSummary(job: LongrunJob) {
     running: 0,
     grading: 0,
     passed: 0,
+    awaiting_review: 0,
     needs_review: 0,
     failed: 0,
   };
@@ -877,6 +926,7 @@ function jobSummary(job: LongrunJob) {
     status: job.status,
     activeTaskId: job.activeTaskId,
     counts,
+    acceptanceReady: acceptanceReady(job),
     updatedAt: job.updatedAt,
   };
 }
@@ -897,9 +947,26 @@ function cloneJob(job: LongrunJob): LongrunJob {
   return structuredClone(job);
 }
 
+function jobView(job: LongrunJob): LongrunJob & { acceptanceReady: boolean } {
+  return {
+    ...cloneJob(job),
+    acceptanceReady: acceptanceReady(job),
+  };
+}
+
+function acceptanceReady(job: LongrunJob): boolean {
+  return job.status === "awaiting_review" || job.status === "completed";
+}
+
 function formatAgentError(error: LocalAgentError): string {
   const payload = toAgentErrorPayload(error);
   return `${payload.code}: ${payload.message}${payload.retryable ? " [retryable]" : ""}`;
+}
+
+function formatAgentRecordError(record: LocalAgentRecord): string {
+  const code = record.errorCode ? `${record.errorCode}: ` : "";
+  const message = record.error ?? `Worker ended with status ${record.status}.`;
+  return `${code}${message}${record.errorRetryable ? " [retryable]" : ""}`;
 }
 
 function graderFailureSummary(results: GraderResult[]): string {

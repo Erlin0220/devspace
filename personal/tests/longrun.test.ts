@@ -34,6 +34,8 @@ class FakeAgentClient {
   readonly records = new Map<string, LocalAgentRecord>();
   private nextId = 1;
 
+  constructor(private readonly terminalOverrides: Array<Partial<LocalAgentRecord>> = []) {}
+
   async start(input: StartLocalAgentInput) {
     this.starts.push(input);
     const now = new Date().toISOString();
@@ -68,8 +70,16 @@ class FakeAgentClient {
   async get(agentId: string, _scope: LocalAgentWorkspaceScope) {
     const current = this.records.get(agentId);
     assert(current);
-    current.status = "idle";
-    current.latestResponse = "worker finished";
+    const override = this.terminalOverrides.shift();
+    if (override) {
+      Object.assign(current, override);
+    } else {
+      current.status = "idle";
+      current.latestResponse = "worker finished";
+      current.error = undefined;
+      current.errorCode = undefined;
+      current.errorRetryable = undefined;
+    }
     current.updatedAt = new Date().toISOString();
     return Result.ok({ ...current });
   }
@@ -126,10 +136,11 @@ async function fixture(
     config?: ServerConfig;
     resolveSubagentsConfig?: () => SubagentsConfig;
     onGraderStart?: (command: string) => void;
+    agentTerminals?: Array<Partial<LocalAgentRecord>>;
   } = {},
 ) {
   const home = await mkdtemp(join(tmpdir(), "devspace-longrun-"));
-  const agents = new FakeAgentClient();
+  const agents = new FakeAgentClient(options.agentTerminals);
   const baseConfig = options.config ?? config();
   const processes = new FakeProcesses(exits, options.onGraderStart);
   const longruns = new PersonalLongruns(
@@ -291,7 +302,7 @@ test("read-only tasks skip providers that do not support that write mode", async
   }
 });
 
-test("worker cannot self-certify a task without an independent grader", async () => {
+test("successful subjective work becomes explicitly ready for supervisor review", async () => {
   const f = await fixture();
   try {
     const job = await f.longruns.createJob({
@@ -304,10 +315,59 @@ test("worker cannot self-certify a task without an independent grader", async ()
 
     const review = await eventually(
       () => f.longruns.getJob(job.id),
-      (value) => value.status === "needs_review",
+      (value) => value.status === "awaiting_review",
     );
-    assert.equal(review.tasks[0]?.status, "needs_review");
-    assert.match(review.tasks[0]?.error ?? "", /self-certification is not accepted/);
+    assert.equal(review.tasks[0]?.status, "awaiting_review");
+    assert.equal(review.tasks[0]?.error, undefined);
+    assert.match(review.tasks[0]?.reviewNote ?? "", /self-certification is not accepted/);
+    assert.equal((review as typeof review & { acceptanceReady?: boolean }).acceptanceReady, true);
+  } finally {
+    await f.cleanup();
+  }
+});
+
+test("retryable worker provider failure continues the same session automatically", async () => {
+  const f = await fixture([], {
+    agentTerminals: [
+      {
+        status: "error",
+        error: "Qoder native Remote Control worker exited unexpectedly.",
+        errorCode: "PROVIDER_UNAVAILABLE",
+        errorRetryable: true,
+      },
+      {
+        status: "idle",
+        latestResponse: "worker recovered and finished",
+        error: undefined,
+        errorCode: undefined,
+        errorRetryable: undefined,
+      },
+    ],
+  });
+  try {
+    const job = await f.longruns.createJob({
+      workspaceId: "ws_test",
+      workspaceRoot: "C:\\project\\fixture",
+      title: "provider retry",
+      defaultTargets: ["qoder"],
+      tasks: [{
+        id: "repair",
+        prompt: "repair until independently verified",
+        writeMode: "allowed",
+        graderCommands: ["verify-repair"],
+        maxAttempts: 3,
+      }],
+    });
+
+    const completed = await eventually(
+      () => f.longruns.getJob(job.id),
+      (value) => value.status === "completed",
+    );
+    assert.equal(f.agents.starts.length, 1);
+    assert.equal(f.agents.continuations.length, 1);
+    assert.equal(f.agents.continuations[0]?.agentId, "agt_test_1");
+    assert.equal(completed.tasks[0]?.attempts, 2);
+    assert.equal(completed.tasks[0]?.status, "passed");
   } finally {
     await f.cleanup();
   }
