@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { VERIFICATION_STAGES } from './verification.mjs';
+import { readUpstreamBaseline } from './upstream.mjs';
 
 const exec = promisify(execFile);
 const requiredStages = VERIFICATION_STAGES.map(stage => stage.name);
@@ -55,13 +56,6 @@ export async function payloadDigest(root, frozenFiles) {
   return { sha256: hash.digest('hex'), bytes, files };
 }
 
-export async function cleanRevision(root) {
-  const options = { cwd: root, windowsHide: true, timeout: 30_000 };
-  const dirty = (await exec('git', ['status', '--porcelain', '--untracked-files=all', '--', '.', ':(exclude).personal-review'], options)).stdout.trim();
-  if (dirty) throw new Error('Commit tracked and untracked changes before creating an installable artifact');
-  return (await exec('git', ['rev-parse', 'HEAD'], options)).stdout.trim();
-}
-
 export async function sourceRevision(root) {
   const options = { cwd: root, windowsHide: true, timeout: 30_000 };
   const candidateHead = (await exec('git', ['rev-parse', 'HEAD'], options)).stdout.trim();
@@ -79,9 +73,7 @@ export async function sourceRevision(root) {
 }
 
 async function upstreamIdentity(root) {
-  const value = JSON.parse(await readFile(join(root, 'personal', 'upstream.json'), 'utf8'));
-  if (typeof value?.version !== 'string' || !/^v?\d+\.\d+\.\d+$/.test(value.tag ?? '')
-      || !/^[a-f0-9]{40}$/.test(value.commit ?? '')) throw new Error('Invalid Personal upstream baseline');
+  const value = await readUpstreamBaseline(root);
   return { version: value.version, tag: value.tag, commit: value.commit };
 }
 
@@ -89,17 +81,11 @@ export async function recordCandidate(root, stages, expectedRevision, extra = {}
   if (requiredStages.some(name => !stages.some(stage => stage.name === name && stage.exitCode === 0))) {
     throw new Error('Required verification stages have not passed');
   }
-  if (typeof expectedRevision === 'string') {
-    try {
-      if (await cleanRevision(root) !== expectedRevision) throw new Error();
-    } catch {
-      throw new Error('Repository changed during verification; rerun against one frozen source tree');
-    }
-  }
-  const expected = typeof expectedRevision === 'string' ? { candidateHead: expectedRevision } : expectedRevision;
   const current = await sourceRevision(root);
-  if (!/^[a-f0-9]{40}$/.test(expected?.candidateHead ?? '') || current.candidateHead !== expected.candidateHead
-      || (expected?.sourceTree && current.sourceTree !== expected.sourceTree)) {
+  if (!/^[a-f0-9]{40}$/.test(expectedRevision?.candidateHead ?? '')
+      || !/^[a-f0-9]{40}$/.test(expectedRevision?.sourceTree ?? '')
+      || current.candidateHead !== expectedRevision.candidateHead
+      || current.sourceTree !== expectedRevision.sourceTree) {
     throw new Error('Repository changed during verification; rerun against one frozen source tree');
   }
   const payload = await payloadDigest(root);

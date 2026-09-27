@@ -75,3 +75,41 @@ recorded in the ignored `.personal-review/candidate.json` manifest and private
 installation state, not hard-coded here. A terminal installed attempt and the
 health endpoint's exact overlay commit are required before claiming that the real
 installed Runtime was replaced.
+
+## Code organization review — 2026-09-27
+
+The overlay was reviewed again after the local-install candidate flow was
+simplified. The cleanup kept behavior and security boundaries intact while
+removing replay noise:
+
+- Runtime ownership identity now lives in a lightweight `personal/ownership.mjs`
+  module. Runtime startup no longer imports the full desktop/OS platform adapter
+  merely to compute its owner id.
+- CLI commands load the desktop/update stack only when the selected command needs
+  it. The OS-owned Runtime path no longer eagerly imports Control Center, Qoder,
+  upgrade discovery or desktop platform code.
+- `personal/upstream.mjs` is the single reader/shape validator for the recorded
+  official baseline. Artifact, Runtime, desktop and upgrade code no longer parse
+  `upstream.json` independently.
+- Candidate recording has one identity contract: `candidateHead + sourceTree`.
+  The retired commit-string compatibility branch and its clean-check helper were
+  removed.
+- Desktop status reads the installation attempt once per snapshot, idle checks use
+  Runtime facts directly, and project-root fallback has one derivation.
+- Upgrade approval now passes the persisted approved head/payload identity to the
+  installer. A failure to write the post-install review projection can no longer
+  reinterpret an already committed healthy Runtime as a failed installation.
+- The unused core `openExternalUrl` implementation and its self-only test were
+  deleted; Personal desktop already owns browser launching.
+
+Two large files remain intentionally unsplit. `src/personal/longrun.ts` is the
+durable task state machine, where persistence/recovery/worker/grader transitions
+share invariants. `personal/desktop/platform.mjs` is the explicit OS ownership
+boundary. Split either only when a real behavior change provides a stable seam,
+not to reduce line count.
+
+The main upstream replay hotspot is still `src/server.ts`: optional Personal
+hooks, MCP replay/session retention, dynamic subagent resolution, the wait-time
+compatibility alias and tool instructions all meet there. Keep future additions
+behind the existing option hooks rather than adding new Personal-specific branches
+to generic server flow.

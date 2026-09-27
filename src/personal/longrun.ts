@@ -141,6 +141,10 @@ const DEFAULT_GRADER_TIMEOUT_MINUTES = 10;
 const DEFAULT_MAX_ATTEMPTS = 2;
 const DEFAULT_QODER_GOAL_TURNS = 200;
 const MAX_GRADER_OUTPUT = 12_000;
+const LONGRUN_SUPERVISION = {
+  mode: "scheduled_supervisor",
+  inlinePolling: false,
+} as const;
 
 export class PersonalLongruns {
   private readonly client: LongrunAgentClient;
@@ -175,7 +179,7 @@ export class PersonalLongruns {
       {
         title: "Start durable DevSpace job",
         description:
-          "Create a durable queue of bounded tasks and start draining it continuously. agent_turn uses the configured subagent runtime; qoder_goal runs the native Qoder CLI /goal loop in the workspace and keeps its session id for supervisor retries. Generic tasks default to read-only; pinned Qoder work defaults to allowed writes. Deterministic graders run outside the worker. requireSupervisorReview keeps a self-completed task in awaiting_review until an independent supervisor approves it.",
+          "Create a durable queue of bounded tasks, start it in the DevSpace runtime, and return immediately. This is a fire-and-forget handoff from the current MCP host turn: after success, do not keep this turn alive by polling get_longrun_job/list_longrun_jobs. If the host supports scheduled or conditional tasks, hand the returned job id to a scheduled supervisor and end the current turn; otherwise return the job id and inspect it only from a later turn. agent_turn uses the configured subagent runtime; qoder_goal runs the native Qoder CLI /goal loop in the workspace and keeps its session id for supervisor retries. Deterministic graders run outside the worker, and requireSupervisorReview keeps a self-completed task in awaiting_review until an independent supervisor approves it.",
         inputSchema: {
           workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
           title: z.string().min(1).max(200),
@@ -210,7 +214,7 @@ export class PersonalLongruns {
       {
         title: "Get durable DevSpace job",
         description:
-          "Read a long-running queue, including task states, worker target/agent ids, deterministic grader evidence, explicit awaiting-review state, acceptanceReady, and current progress.",
+          "Read one durable job from a later or scheduled supervisor turn, including task states, deterministic grader evidence, review state, acceptanceReady, and current progress. Do not use this to busy-poll from the turn that created the job.",
         inputSchema: { jobId: jobIdSchema },
         outputSchema: resultOutputSchema,
         annotations: {
@@ -228,7 +232,7 @@ export class PersonalLongruns {
       {
         title: "List durable DevSpace jobs",
         description:
-          "List persisted long-running jobs and compact progress counts with an acceptanceReady signal. Use this from a scheduled supervisor to find work that is running, paused, failed, or ready for independent review.",
+          "List persisted long-running jobs and compact progress counts with an acceptanceReady signal. This is intended for a scheduled supervisor or a later user turn, not for keeping the job-creation turn alive with polling.",
         inputSchema: {},
         outputSchema: resultOutputSchema,
         annotations: {
@@ -1231,6 +1235,7 @@ function jobSummary(job: LongrunJob) {
     activeTaskId: job.activeTaskId,
     counts,
     acceptanceReady: acceptanceReady(job),
+    supervision: LONGRUN_SUPERVISION,
     updatedAt: job.updatedAt,
   };
 }
@@ -1294,10 +1299,13 @@ function cloneJob(job: LongrunJob): LongrunJob {
   return structuredClone(job);
 }
 
-function jobView(job: LongrunJob): LongrunJob & { acceptanceReady: boolean } {
+function jobView(
+  job: LongrunJob,
+): LongrunJob & { acceptanceReady: boolean; supervision: typeof LONGRUN_SUPERVISION } {
   return {
     ...cloneJob(job),
     acceptanceReady: acceptanceReady(job),
+    supervision: LONGRUN_SUPERVISION,
   };
 }
 

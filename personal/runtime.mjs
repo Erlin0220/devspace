@@ -1,5 +1,4 @@
 import { join } from 'node:path';
-import { readFile } from 'node:fs/promises';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { loadConfig } from '../dist/config.js';
 import { createServer } from '../dist/server.js';
@@ -7,13 +6,14 @@ import { personalExtensions } from '../dist/personal/index.js';
 import { LocalAgentClient } from '../dist/local-agent-client.js';
 import { readPersonalAuth, readPersonalConfig, runtimeEnvironment } from './config.mjs';
 import { readJson, stateHome } from './state.mjs';
-import { ownerId } from './desktop/platform.mjs';
+import { ownerId } from './ownership.mjs';
+import { readUpstreamBaseline } from './upstream.mjs';
 
 export async function runtimeConfig(home = stateHome()) {
   const personal = await readPersonalConfig(home);
   return { personal, config: loadConfig(runtimeEnvironment(personal)) };
 }
-export async function runtimeSettings(home = stateHome()) {
+async function runtimeSettings(home = stateHome()) {
   const current = await runtimeConfig(home);
   return { ...current, auth: await readPersonalAuth(home) };
 }
@@ -25,10 +25,6 @@ async function agentDaemonSnapshot(config, requestTimeoutMs = 750) {
   }
   return { available: true, activeTurns: result.value.activeTurns, runtimeCount: result.value.runtimeCount,
     state: result.value.state, pid: result.value.pid };
-}
-export async function agentDaemonStatus(home = stateHome(), knownConfig) {
-  const config = knownConfig ?? (await runtimeConfig(home)).config;
-  return agentDaemonSnapshot(config);
 }
 async function runtimeHealthSnapshot(home, config, timeoutMs = 2_000) {
   const origin = `http://127.0.0.1:${config.port}`;
@@ -97,7 +93,7 @@ export async function stopAgentDaemon(home = stateHome()) {
 export async function startRuntime(home = stateHome()) {
   const { personal, config, auth } = await runtimeSettings(home);
   if (personal.paused) return null;
-  const baseline = JSON.parse(await readFile(new URL('./upstream.json', import.meta.url), 'utf8'));
+  const baseline = await readUpstreamBaseline();
   const installed = await readJson(new URL('../.personal-install.json', import.meta.url), null);
   const runtimeEnv = runtimeEnvironment(personal);
   const resolveSubagentsConfig = () => loadConfig(runtimeEnv).subagents;

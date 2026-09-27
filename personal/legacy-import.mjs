@@ -6,7 +6,7 @@ import { isAbsolute, join, resolve } from 'node:path';
 import { access } from 'node:fs/promises';
 import { atomicJson, readJson, secureStateDirectory, stateHome, statePath } from './state.mjs';
 import { runWindowsDesktop } from './desktop/platform.mjs';
-import { repositoryRoot } from './upgrade.mjs';
+import { repositoryRoot } from './upstream.mjs';
 
 const retiredConfigKeys = new Set([
   'codegraphEnabled', 'codegraphCommand', 'codegraphArgs', 'codegraphStartupTimeoutMs', 'codegraphToolTimeoutMs',

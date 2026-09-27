@@ -2,11 +2,9 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readJson, stateHome, statePath } from './state.mjs';
-import { jobAction, openBrowser } from './desktop/platform.mjs';
-import { operations } from './desktop/main.mjs';
 
 const home = stateHome(); const action = process.argv[2] ?? 'status';
-const ops = operations(home);
+const desktopOperations = async () => (await import('./desktop/main.mjs')).operations(home);
 try {
   if (action === 'runtime' || action === 'desktop') {
     const service = action === 'runtime' ? await (await import('./runtime.mjs')).startRuntime(home)
@@ -28,14 +26,19 @@ try {
   } else if (action === 'gc') {
     console.log(JSON.stringify(await (await import('./gc.mjs')).collectGarbage(home, { dryRun: process.argv.includes('--dry-run') }), null, 2));
   } else if (action === 'repair') {
+    const ops = await desktopOperations();
     await ops.repair();
   } else if (action === 'start') {
+    const ops = await desktopOperations();
     await ops.start();
   } else if (action === 'stop') {
+    const ops = await desktopOperations();
     await ops.stop();
   } else if (['pause', 'resume'].includes(action)) {
+    const ops = await desktopOperations();
     await ops[action === 'pause' ? 'suspend' : 'resume']();
   } else if (action === 'open') {
+    const { jobAction, openBrowser } = await import('./desktop/platform.mjs');
     await jobAction(home, 'desktop', 'start');
     const { setTimeout: sleep } = await import('node:timers/promises');
     let opened = false;
@@ -53,6 +56,7 @@ try {
     const upgrade = await import('./upgrade.mjs');
     console.log(JSON.stringify(action === 'check' ? await upgrade.discoverStable() : await upgrade.prepareStable({ onProgress: console.error }), null, 2));
   } else if (['status', 'diagnostics'].includes(action)) {
+    const ops = await desktopOperations();
     console.log(JSON.stringify(await ops[action](), null, 2));
   } else throw new Error('Usage: devspace-personal install [source] | migrate | gc [--dry-run] | start | stop | pause | resume | open | repair | status | diagnostics | check | prepare');
 } catch (error) { console.error(error.message); process.exitCode = 1; }

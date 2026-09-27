@@ -1,12 +1,12 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { atomicJson, readJson, stateHome, statePath } from '../state.mjs';
 import { approvedProjectRoot, readPersonalAuth, readPersonalConfig } from '../config.mjs';
-import { runtimeSnapshot, waitForRuntime } from '../runtime.mjs';
+import { runtimeConfig, runtimeSnapshot, waitForRuntime } from '../runtime.mjs';
+import { readUpstreamBaseline } from '../upstream.mjs';
 import { resolveQoderCommand } from '../../dist/local-agent-qoder.js';
 import { discoverStable, prepareStable } from '../upgrade.mjs';
 import { createDesktopController } from './controller.mjs';
@@ -15,12 +15,13 @@ import { chooseFolder, installRecord, jobAction, jobStatus, launchQoderCli, open
 import semver from 'semver';
 
 const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
-const baseline = JSON.parse(await readFile(new URL('../upstream.json', import.meta.url), 'utf8'));
-async function candidateStatus(home) {
+const baseline = await readUpstreamBaseline(packageRoot);
+const effectiveProjectRoot = (personal, config) =>
+  personal.projectRoot ?? (config.allowedRoots.length === 1 ? config.allowedRoots[0] : undefined);
+async function candidateStatus(home, attempt) {
   const review = await readJson(statePath(home, 'upgradeReview'), null).catch(() => null);
   if (!review?.candidate || !review.candidateHead) return review;
   const manifest = await readJson(join(review.candidate, '.personal-review', 'candidate.json'), null).catch(() => null);
-  const attempt = await readJson(statePath(home, 'installAttempt'), null).catch(() => null);
   const expectedPayload = review.candidatePayloadSha256 ?? manifest?.payload?.sha256;
   const applied = attempt?.status === 'installed' && attempt.candidateHead === review.candidateHead
     && (!expectedPayload || attempt.payloadSha256 === expectedPayload);
@@ -32,20 +33,24 @@ async function candidateStatus(home) {
     tests: manifest?.stages };
 }
 export async function status(home = stateHome()) {
-  const [runtime, auth] = await Promise.all([runtimeSnapshot(home), readPersonalAuth(home)]);
+  const [runtime, auth, installation] = await Promise.all([
+    runtimeSnapshot(home),
+    readPersonalAuth(home),
+    readJson(statePath(home, 'installAttempt'), null).catch(() => null),
+  ]);
   const { config, personal } = runtime;
   return { running: runtime.running, paused: personal.paused,
-    version: baseline.version, projectRoot: personal.projectRoot ?? (config.allowedRoots.length === 1 ? config.allowedRoots[0] : undefined),
+    version: baseline.version, projectRoot: effectiveProjectRoot(personal, config),
     allowedRoots: config.allowedRoots, endpoint: `${runtime.origin}/mcp`,
     apiTokenConfigured: Boolean(auth.apiToken), codegraphEnabled: personal.codegraph?.enabled === true,
     runningProcesses: runtime.runningProcesses,
     activeAgentTurns: runtime.activeAgentTurns, agentRuntimeCount: runtime.agentRuntimeCount, agentStatusError: runtime.agentStatusError,
     overlayCommit: runtime.overlayCommit,
-    candidate: await candidateStatus(home),
-    installation: await readJson(statePath(home, 'installAttempt'), null).catch(() => null) };
+    candidate: await candidateStatus(home, installation),
+    installation };
 }
 async function requireIdle(home) {
-  const snapshot = await status(home);
+  const snapshot = await runtimeSnapshot(home);
   if (snapshot.runningProcesses > 0) throw new Error('仍有命令正在执行，请结束任务后再操作');
   if (snapshot.activeAgentTurns > 0) throw new Error('仍有子代理任务正在执行，请结束任务后再操作');
   if (snapshot.activeAgentTurns === null) throw new Error('无法确认子代理是否空闲，请检查诊断后再操作');
@@ -104,13 +109,13 @@ export function operations(home = stateHome()) {
       try { await atomicJson(statePath(home, 'personal'), { ...before, projectRoot: root }); if (!paused) await startReady(home); }
       catch (error) { await stopReady(home).catch(() => {}); await atomicJson(statePath(home, 'personal'), before); if (!paused) await startReady(home); throw error; }
     },
-    'choose-folder': async input => chooseFolder({ ...input, projectRoot: (await status(home)).projectRoot }),
+    'choose-folder': async input => chooseFolder({ ...input, projectRoot: await currentProjectRoot(home) }),
     'launch-qoder': async () => {
-      const current = await status(home);
-      if (!current.projectRoot) throw new Error('请先设置项目目录');
+      const projectRoot = await currentProjectRoot(home);
+      if (!projectRoot) throw new Error('请先设置项目目录');
       const command = resolveQoderCommand();
       if (!command) throw new Error('未找到 Qoder CLI，请先安装 Qoder CLI');
-      await launchQoderCli(command, current.projectRoot);
+      await launchQoderCli(command, projectRoot);
     },
     logs: () => openLogs(home),
     diagnostics: async () => {
@@ -142,16 +147,19 @@ export function operations(home = stateHome()) {
       const approved = { ...candidate, approvedCandidateHead: candidate.candidateHead,
         approvedPayloadSha256: candidate.candidatePayloadSha256, approvedAt: new Date().toISOString() };
       await atomicJson(statePath(home, 'upgradeReview'), approved);
+      let result;
       try {
-        const result = await (await import('../install.mjs')).requestInstallAndWait(candidate.candidate, home,
-          { expectedCandidateHead: candidate.candidateHead, expectedPayloadSha256: candidate.candidatePayloadSha256 });
-        await atomicJson(statePath(home, 'upgradeReview'), { ...approved, status: 'applied', appliedAt: new Date().toISOString(),
-          requestId: result.requestId });
-        return result;
+        result = await (await import('../install.mjs')).requestInstallAndWait(candidate.candidate, home,
+          { expectedCandidateHead: approved.approvedCandidateHead, expectedPayloadSha256: approved.approvedPayloadSha256 });
       } catch (error) {
         await atomicJson(statePath(home, 'upgradeReview'), { ...approved, lastInstallError: error.message, lastInstallAt: new Date().toISOString() }).catch(() => {});
         throw error;
       }
+      // Review state is a projection after the installer commits. Its failure must not
+      // reinterpret a healthy installed Runtime as a failed installation.
+      await atomicJson(statePath(home, 'upgradeReview'), { ...approved, status: 'applied', appliedAt: new Date().toISOString(),
+        requestId: result.requestId }).catch(() => {});
+      return result;
     },
     exit: async () => {
       await requireIdle(home);
@@ -160,6 +168,10 @@ export function operations(home = stateHome()) {
       await stopReady(home);
     },
   };
+}
+async function currentProjectRoot(home) {
+  const { config, personal } = await runtimeConfig(home);
+  return effectiveProjectRoot(personal, config);
 }
 export function trayState(snapshot) {
   const ready = snapshot.running && !snapshot.paused;

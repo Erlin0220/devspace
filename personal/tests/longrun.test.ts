@@ -332,6 +332,10 @@ test("native qoder goal self-heals then waits for independent supervisor approva
     assert.equal(review.tasks[0]?.status, "awaiting_review");
     assert.equal(review.tasks[0]?.attempts, 1);
     assert.equal((review as typeof review & { acceptanceReady?: boolean }).acceptanceReady, true);
+    assert.deepEqual(
+      (review as typeof review & { supervision?: unknown }).supervision,
+      { mode: "scheduled_supervisor", inlinePolling: false },
+    );
   } finally {
     await f.cleanup();
   }

@@ -6,10 +6,10 @@ import { promisify } from 'node:util';
 import semver from 'semver';
 import { recordCandidate, sourceRevision } from './artifact.mjs';
 import { runVerification } from './verification.mjs';
+import { readUpstreamBaseline, repositoryRoot } from './upstream.mjs';
 
 const exec = promisify(execFile);
-export const UPSTREAM = 'https://github.com/Waishnav/devspace.git';
-export const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
+const UPSTREAM = 'https://github.com/Waishnav/devspace.git';
 export const stableVersion = value => typeof value === 'string' && /^\d+\.\d+\.\d+$/.test(value) && semver.valid(value) === value;
 
 export function selectStable(releases, registry) {
@@ -51,8 +51,8 @@ async function git(cwd, args, timeout = 120000) {
   catch (error) { throw new Error(`git ${args[0]} failed: ${String(error.stderr ?? error.message).slice(-5000)}`); }
 }
 export async function assertLinearOverlay(root = repositoryRoot) {
-  const baseline = JSON.parse(await readFile(join(root, 'personal', 'upstream.json'), 'utf8'));
-  if (!stableVersion(baseline.version) || !/^[a-f0-9]{40}$/.test(baseline.commit)) throw new Error('Invalid recorded stable baseline');
+  const baseline = await readUpstreamBaseline(root);
+  if (!stableVersion(baseline.version)) throw new Error('Invalid recorded stable baseline');
   try { await git(root, ['merge-base', '--is-ancestor', baseline.commit, 'HEAD']); }
   catch { throw new Error('Personal overlay does not descend from the recorded official stable baseline'); }
   if (await git(root, ['rev-list', '--merges', `${baseline.commit}..HEAD`])) throw new Error('Personal overlay is not linear');

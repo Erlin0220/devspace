@@ -98,7 +98,7 @@ async function ready(home, version, commit, payloadSha256) {
     errorMessage: 'Candidate did not become healthy within the readiness window',
   });
 }
-export async function installPersonal(source, home = stateHome(), { requestId, expectedCandidateHead, expectedPayloadSha256 } = {}) {
+async function installPersonal(source, home = stateHome(), { requestId, expectedCandidateHead, expectedPayloadSha256 } = {}) {
   await secureStateDirectory(home);
   const { manifest, payload } = await verifyCandidate(source);
   if (expectedCandidateHead && manifest.candidateHead !== expectedCandidateHead) {
@@ -162,7 +162,7 @@ export async function installPersonal(source, home = stateHome(), { requestId, e
 
 // The OS starts this outside the invoking MCP process tree. It may safely replace
 // the Runtime/desktop without killing itself or unrelated Team/Tunnel processes.
-export async function requestInstall(source, home = stateHome(), { expectedCandidateHead, expectedPayloadSha256 } = {}) {
+async function requestInstall(source, home = stateHome(), { expectedCandidateHead, expectedPayloadSha256 } = {}) {
   const manifest = await inspectCandidate(source);
   if (expectedCandidateHead && manifest.candidateHead !== expectedCandidateHead) {
     throw new Error('Candidate revision changed after review; prepare and approve it again');
@@ -250,7 +250,7 @@ async function reconcileStoppedAttempt(home, attempt) {
   return value;
 }
 
-export async function waitForInstall(home, requestId, { timeoutMs = 35 * 60_000, cleanup = true } = {}) {
+async function waitForInstall(home, requestId, { timeoutMs = 35 * 60_000, cleanup = true } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     let attempt = await readJson(attemptPath(home), null).catch(() => null);

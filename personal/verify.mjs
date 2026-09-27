@@ -4,9 +4,10 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { assertLinearOverlay, repositoryRoot } from './upgrade.mjs';
+import { assertLinearOverlay } from './upgrade.mjs';
 import { recordCandidate, sourceRevision, verifyCandidate } from './artifact.mjs';
 import { runVerification } from './verification.mjs';
+import { repositoryRoot } from './upstream.mjs';
 
 const exec = promisify(execFile);
 async function git(cwd, args, timeout = 120_000) {

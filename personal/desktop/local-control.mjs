@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { atomicJson, randomSecret, readJson, secureStateDirectory, stateHome, statePath } from '../state.mjs';
 
-export const PREFERRED_PORT = 53683;
+const PREFERRED_PORT = 53683;
 const validPort = value => Number.isInteger(value) && value >= 49152 && value <= 65535;
 const assets = {
   '/': ['control.html', 'text/html; charset=utf-8'],

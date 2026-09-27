@@ -1,7 +1,7 @@
 // Desktop helpers adapted from the fixed Team 0.2.6 snapshot. All persistent
 // services are owned by Task Scheduler / launchd / systemd, never an MCP command.
 import { execFile } from 'node:child_process';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { constants as fsConstants } from 'node:fs';
 import { access, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
@@ -9,6 +9,7 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { stateHome, readJson, atomicJson, secureStateDirectory, statePath } from '../state.mjs';
+import { ownerId } from '../ownership.mjs';
 
 const exec = promisify(execFile);
 export const serviceComponents = ['runtime', 'desktop'];
@@ -16,7 +17,7 @@ const components = serviceComponents;
 const managedComponents = [...components, 'installer'];
 const xml = value => String(value).replace(/[<>&"']/g, ch => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[ch]);
 const quoted = value => `"${String(value).replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
-export const ownerId = home => createHash('sha256').update(process.platform === 'win32' ? resolve(home).toLowerCase() : resolve(home)).digest('hex').slice(0, 20);
+export { ownerId };
 export const jobName = (home, component) => `com.personal-devspace.${ownerId(home)}.${component}`;
 const system = executable => join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', executable);
 
@@ -310,5 +311,5 @@ export async function jobStatus(home, component) {
     .then(result => ({ exists: true, running: result.stdout.trim() === 'active', state: result.stdout.trim() || 'unknown' }),
       error => { if ([3, 4].includes(error.code)) return { exists: true, running: false, state: 'inactive' }; throw error; });
 }
-export const jobRunning = async (home, component) => (await jobStatus(home, component)).running;
+const jobRunning = async (home, component) => (await jobStatus(home, component)).running;
 export const installerRunning = home => jobRunning(home, 'installer');
