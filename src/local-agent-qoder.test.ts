@@ -5,6 +5,8 @@ import { join, resolve } from "node:path";
 import {
   QoderCliLocalAgentDriver,
   qoderCliArgs,
+  qoderInteractiveGoalArgs,
+  parseQoderGoalStatus,
   qoderPrompt,
 } from "./local-agent-qoder.js";
 
@@ -64,7 +66,7 @@ assert.ok(qoderCliArgs({
 
 assert.throws(
   () => qoderCliArgs({ ...context, writeMode: "read_only" }, "local-session", context.agentId),
-  /hard read-only headless mode/,
+  /hard read-only mode/,
 );
 assert.throws(
   () => qoderCliArgs({
@@ -76,6 +78,49 @@ assert.throws(
 assert.equal(qoderPrompt({ prompt: "finish the project", executionMode: "goal", goalTurns: 321 }),
   "/goal finish the project --turns 321");
 assert.equal(qoderPrompt({ prompt: "normal turn", executionMode: "turn" }), "normal turn");
+assert.deepEqual(qoderInteractiveGoalArgs({
+  ...context,
+  prompt: "finish the project",
+  executionMode: "goal",
+  goalTurns: 321,
+}, "local-session", context.agentId), [
+  "--session-id",
+  "local-session",
+  "--name",
+  "DevSpace agt_qoder",
+  "--permission-mode",
+  "auto",
+  "--model",
+  "Qwen3.8-Flash",
+  "--reasoning-effort",
+  "high",
+  "-i",
+  "/goal finish the project --turns 321",
+]);
+assert.deepEqual(qoderInteractiveGoalArgs({
+  ...context,
+  providerSessionId: "existing-session",
+  prompt: "fix the remaining failure",
+  executionMode: "goal",
+  goalTurns: 50,
+}, "ignored", context.agentId).slice(0, 4), [
+  "--resume",
+  "existing-session",
+  "--permission-mode",
+  "auto",
+]);
+assert.equal(qoderInteractiveGoalArgs({
+  ...context,
+  providerSessionId: "existing-session",
+  prompt: "fix the remaining failure",
+  executionMode: "goal",
+  goalTurns: 50,
+}, "ignored", context.agentId).at(-1), "/goal fix the remaining failure --turns 50");
+assert.equal(parseQoderGoalStatus("**Status:** active\n**Turns:** 2 / 10"), "active");
+assert.equal(parseQoderGoalStatus("**Status:** paused\n**Turns:** 10 / 10"), "paused");
+assert.equal(parseQoderGoalStatus("**Status:** complete"), "complete");
+assert.equal(parseQoderGoalStatus("There is no active goal."), "none");
+assert.equal(parseQoderGoalStatus("temporarily unavailable"), "unknown");
 
 const driver = new QoderCliLocalAgentDriver({}, () => "/usr/local/bin/qodercli");
 assert.equal(driver.provider, "qoder");

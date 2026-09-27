@@ -55,6 +55,7 @@ export interface LocalAgentRunCallbacks {
    */
   onSessionId?: (providerSessionId: string) => void | Promise<void>;
   onProcessId?: (processId: number) => void | Promise<void>;
+  onProgress?: (message: string) => void | Promise<void>;
 }
 
 export interface LocalAgentRuntimeContext {

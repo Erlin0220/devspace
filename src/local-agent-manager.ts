@@ -460,6 +460,10 @@ export class LocalAgentManager {
           const updated = this.store.updateResult(record.id, { processId });
           if (updated.isErr()) throw updated.error;
         },
+        onProgress: (message) => {
+          const updated = this.store.updateResult(record.id, { latestResponse: message });
+          if (updated.isErr()) throw updated.error;
+        },
       };
       const result = await this.pool.run(driver.value, context, input.value, callbacks);
       if (result.isErr()) {

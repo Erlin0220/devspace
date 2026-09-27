@@ -134,6 +134,7 @@ export class LocalAgentRuntimePool {
         await inputCallbacks?.onSessionId?.(providerSessionId);
       },
       onProcessId: inputCallbacks?.onProcessId,
+      onProgress: inputCallbacks?.onProgress,
     };
     const startedAt = this.now();
     try {
