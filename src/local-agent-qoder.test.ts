@@ -8,6 +8,7 @@ import {
   qoderInteractiveGoalArgs,
   parseQoderGoalStatus,
   qoderPrompt,
+  resolvePowerShell7Command,
 } from "./local-agent-qoder.js";
 
 const context = {
@@ -16,7 +17,7 @@ const context = {
   workspaceRoot: "/tmp/project",
   writeMode: "allowed" as const,
   model: "Qwen3.8-Flash",
-  effort: "high",
+  effort: "max",
 };
 
 assert.deepEqual(qoderCliArgs(context, "local-session", context.agentId), [
@@ -29,10 +30,12 @@ assert.deepEqual(qoderCliArgs(context, "local-session", context.agentId), [
   "DevSpace agt_qoder",
   "--permission-mode",
   "auto",
+  "--context-window",
+  "1000000",
   "--model",
   "Qwen3.8-Flash",
   "--reasoning-effort",
-  "high",
+  "max",
 ]);
 
 assert.deepEqual(qoderCliArgs({
@@ -46,10 +49,12 @@ assert.deepEqual(qoderCliArgs({
   "existing-session",
   "--permission-mode",
   "auto",
+  "--context-window",
+  "1000000",
   "--model",
   "Qwen3.8-Flash",
   "--reasoning-effort",
-  "high",
+  "max",
 ]);
 
 assert.deepEqual(qoderCliArgs({
@@ -57,7 +62,7 @@ assert.deepEqual(qoderCliArgs({
   writeMode: "full_access",
 }, "local-session", context.agentId).slice(-2), [
   "--reasoning-effort",
-  "high",
+  "max",
 ]);
 assert.ok(qoderCliArgs({
   ...context,
@@ -90,10 +95,12 @@ assert.deepEqual(qoderInteractiveGoalArgs({
   "DevSpace agt_qoder",
   "--permission-mode",
   "auto",
+  "--context-window",
+  "1000000",
   "--model",
   "Qwen3.8-Flash",
   "--reasoning-effort",
-  "high",
+  "max",
   "-i",
   "/goal finish the project --turns 321",
 ]);
@@ -138,6 +145,11 @@ const recorder = join(root, "record-args.cjs");
 const command = join(root, process.platform === "win32" ? "qodercli.cmd" : "qodercli");
 try {
   await mkdir(workspaceRoot, { recursive: true });
+  const fakePwsh = join(root, "pwsh.exe");
+  await writeFile(fakePwsh, "");
+  if (process.platform !== "win32") await chmod(fakePwsh, 0o700);
+  assert.equal(resolvePowerShell7Command({ PATH: root, ProgramFiles: "", LOCALAPPDATA: "" }), resolve(fakePwsh));
+
   await writeFile(
     recorder,
     [
@@ -173,7 +185,7 @@ try {
     workspaceRoot,
     writeMode: "allowed",
     model: "Qwen3.8-Flash",
-    effort: "high",
+    effort: "max",
   }, {
     onSessionId: (value) => { sessionId = value; },
   });

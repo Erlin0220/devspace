@@ -33,6 +33,7 @@ const QODER_STDOUT_TAIL_CHARS = 4 * 1024 * 1024;
 const QODER_STDERR_TAIL_CHARS = 64 * 1024;
 const QODER_GOAL_STATUS_POLL_MS = 5_000;
 const QODER_GOAL_START_GRACE_MS = 20_000;
+const QODER_CONTEXT_WINDOW = "1000000";
 const LEGACY_REMOTE_SESSION = /^qs_[A-Za-z0-9]+$/;
 
 export function qoderCliArgs(
@@ -360,6 +361,8 @@ function qoderAuthorityArgs(input: {
   const args = [
     "--permission-mode",
     writeMode === "full_access" ? "bypass_permissions" : "auto",
+    "--context-window",
+    QODER_CONTEXT_WINDOW,
   ];
   if (input.model) args.push("--model", input.model);
   if (input.effort) args.push("--reasoning-effort", input.effort);
@@ -450,7 +453,6 @@ async function runInteractiveQoderGoal(
   const runDir = await mkdtemp(join(tmpdir(), "devspace-qoder-"));
   const configPath = join(runDir, "run.json");
   const scriptPath = join(runDir, "run.ps1");
-  const commandPath = join(runDir, "run.cmd");
   await writeFile(configPath, JSON.stringify({
     command: options.command,
     args: options.args,
@@ -463,19 +465,11 @@ async function runInteractiveQoderGoal(
     "exit $LASTEXITCODE",
     "",
   ].join("\r\n"), { mode: 0o600 });
-  await writeFile(commandPath, [
-    "@echo off",
-    `title DevSpace Qoder ${options.agentId}`,
-    "\"%SystemRoot%\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\" -NoLogo -NoProfile -ExecutionPolicy Bypass -File \"%DEVSPACE_QODER_SCRIPT%\"",
-    "exit /b %errorlevel%",
-    "",
-  ].join("\r\n"), { mode: 0o600 });
 
   let processId: number | undefined;
   try {
     processId = await launchInteractiveQoderTerminal({
       ...options,
-      commandPath,
       configPath,
       scriptPath,
     });
@@ -544,46 +538,55 @@ async function runInteractiveQoderGoal(
 
 async function launchInteractiveQoderTerminal(
   options: InteractiveQoderGoalOptions & {
-    commandPath: string;
     configPath: string;
     scriptPath: string;
   },
 ): Promise<number> {
-  const powershell = join(
-    options.env.SystemRoot ?? process.env.SystemRoot ?? "C:\\Windows",
-    "System32",
-    "WindowsPowerShell",
-    "v1.0",
-    "powershell.exe",
-  );
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    "$arg = '/d /c \"' + $env:DEVSPACE_QODER_CMD + '\"'",
-    "$p = Start-Process -FilePath $env:DEVSPACE_QODER_COMSPEC -ArgumentList $arg -WorkingDirectory $env:DEVSPACE_QODER_CWD -WindowStyle Normal -PassThru",
-    "[Console]::Out.Write($p.Id)",
-  ].join("; ");
-  const launched = await exec(powershell, [
+  const powershell = resolvePowerShell7Command(options.env);
+  if (!powershell) {
+    throw new AgentProviderUnavailableError({
+      code: "PROVIDER_UNAVAILABLE",
+      provider: "qoder",
+      agentId: options.agentId,
+      operation: "spawn_terminal",
+      retryable: true,
+      message: "PowerShell 7 (pwsh) is required for the visible Qoder terminal.",
+    });
+  }
+  const child = spawn(powershell, [
     "-NoLogo",
     "-NoProfile",
-    "-NonInteractive",
-    "-STA",
-    "-EncodedCommand",
-    Buffer.from(script, "utf16le").toString("base64"),
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    options.scriptPath,
   ], {
-    windowsHide: true,
-    timeout: 30_000,
-    maxBuffer: 64 * 1024,
+    cwd: options.cwd,
+    windowsHide: false,
+    detached: true,
+    stdio: "ignore",
     env: {
       ...options.env,
-      DEVSPACE_QODER_COMSPEC: options.env.ComSpec ?? process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe",
-      DEVSPACE_QODER_CMD: options.commandPath,
-      DEVSPACE_QODER_CWD: options.cwd,
-      DEVSPACE_QODER_SCRIPT: options.scriptPath,
       DEVSPACE_QODER_CONFIG: options.configPath,
     },
   });
-  const processId = Number(launched.stdout.trim());
-  if (Number.isSafeInteger(processId) && processId > 0) return processId;
+  await new Promise<void>((resolveSpawn, rejectSpawn) => {
+    child.once("spawn", resolveSpawn);
+    child.once("error", rejectSpawn);
+  }).catch((cause) => {
+    throw new AgentProviderUnavailableError({
+      code: "PROVIDER_UNAVAILABLE",
+      provider: "qoder",
+      agentId: options.agentId,
+      operation: "spawn_terminal",
+      retryable: true,
+      cause,
+      message: "Unable to start the visible Qoder PowerShell 7 terminal.",
+    });
+  });
+  child.unref();
+  const processId = child.pid;
+  if (typeof processId === "number" && Number.isSafeInteger(processId) && processId > 0) return processId;
   throw new AgentProviderUnavailableError({
     code: "PROVIDER_UNAVAILABLE",
     provider: "qoder",
@@ -592,6 +595,22 @@ async function launchInteractiveQoderTerminal(
     retryable: true,
     message: "Windows did not return a valid Qoder terminal process id.",
   });
+}
+
+export function resolvePowerShell7Command(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const path = env.PATH;
+  if (path) {
+    for (const directory of path.split(delimiter)) {
+      if (!directory) continue;
+      const candidate = resolve(directory, "pwsh.exe");
+      if (executableExists(candidate)) return candidate;
+    }
+  }
+  const candidates = [
+    env.ProgramFiles && join(env.ProgramFiles, "PowerShell", "7", "pwsh.exe"),
+    env.LOCALAPPDATA && join(env.LOCALAPPDATA, "Programs", "PowerShell", "7", "pwsh.exe"),
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  return candidates.find(executableExists);
 }
 
 async function readNativeQoderGoalStatus(

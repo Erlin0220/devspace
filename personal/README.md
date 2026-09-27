@@ -15,9 +15,12 @@ Personal web subagents are owned directly by the OS-managed Runtime and persiste
 in the existing SQLite local-agent store. There is no second long-run task graph.
 `run_agent` can start a normal turn or Qoder native Goal execution; on Windows,
 Qoder Goal work is launched as the native interactive `qodercli -i` TUI in a
-real visible `cmd.exe` window. DevSpace does not PTY-host, mirror or parse that
-UI; it keeps only the provider session/execution/review state and reads progress
-through Qoder's public `/goal status` command.
+real visible PowerShell 7 (`pwsh`) console, with `pwsh` launching `qodercli`
+directly rather than through `cmd.exe` or Windows PowerShell 5.1. Qoder model
+turns explicitly pin `--context-window 1000000`; model and reasoning effort stay
+owned by the provider configuration. DevSpace does not PTY-host, mirror or parse
+that UI; it keeps only the provider session/execution/review state and reads
+progress through Qoder's public `/goal status` command.
 
 The only core seams are optional server authentication/tool/event-store hooks,
 a read-only running-process count, the identified `waitTimeMs` compatibility alias,
