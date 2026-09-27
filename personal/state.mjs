@@ -16,7 +16,6 @@ export const PERSONAL_STATE_FILES = Object.freeze({
   intent: 'intent.json',
   install: 'install.json',
   installAttempt: 'install-attempt.json',
-  installQueue: 'install-queue.json',
   legacyImport: 'legacy-import.json',
   controlCapability: 'control-capability.json',
   upgradeReview: 'upgrade-review.json',

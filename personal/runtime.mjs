@@ -17,15 +17,6 @@ async function runtimeSettings(home = stateHome()) {
   const current = await runtimeConfig(home);
   return { ...current, auth: await readPersonalAuth(home) };
 }
-async function agentDaemonSnapshot(config, requestTimeoutMs = 750) {
-  const result = await new LocalAgentClient({ stateDir: config.stateDir, requestTimeoutMs }).status();
-  if (result.isErr()) {
-    if (result.error?.code === 'DAEMON_UNAVAILABLE') return { available: false, activeTurns: 0, runtimeCount: 0 };
-    return { available: false, activeTurns: null, runtimeCount: null, error: result.error?.code ?? result.error?.message ?? 'unknown' };
-  }
-  return { available: true, activeTurns: result.value.activeTurns, runtimeCount: result.value.runtimeCount,
-    state: result.value.state, pid: result.value.pid };
-}
 async function runtimeHealthSnapshot(home, config, timeoutMs = 2_000) {
   const origin = `http://127.0.0.1:${config.port}`;
   const health = await fetch(`${origin}/personal-healthz`, { signal: AbortSignal.timeout(timeoutMs) })
@@ -41,25 +32,16 @@ async function runtimeHealthSnapshot(home, config, timeoutMs = 2_000) {
     overlayCommit: owned ? health.overlayCommit : undefined,
     payloadSha256: owned ? health.payloadSha256 : undefined,
     runtimeVersion: owned ? health.version : undefined,
+    activeAgentTurns: owned ? health.activeAgentTurns ?? 0 : 0,
+    agentRuntimeCount: owned ? health.agentRuntimeCount ?? 0 : 0,
   };
 }
-export async function runtimeSnapshot(home = stateHome(), known, { includeAgentStatus = true } = {}) {
+export async function runtimeSnapshot(home = stateHome(), known) {
   const current = known ?? await runtimeConfig(home);
   const runtime = await runtimeHealthSnapshot(home, current.config);
-  const agentd = includeAgentStatus
-    ? await agentDaemonSnapshot(current.config).catch(error => ({
-      available: false,
-      activeTurns: null,
-      runtimeCount: null,
-      error: error.message,
-    }))
-    : undefined;
   return {
     ...current,
     ...runtime,
-    activeAgentTurns: agentd?.activeTurns,
-    agentRuntimeCount: agentd?.runtimeCount,
-    agentStatusError: agentd?.error,
   };
 }
 export async function waitForRuntime(
@@ -69,26 +51,27 @@ export async function waitForRuntime(
 ) {
   const current = known ?? await runtimeConfig(home);
   for (let i = 0; i < attempts; i++) {
-    const snapshot = await runtimeSnapshot(home, current, { includeAgentStatus: false });
+    const snapshot = await runtimeSnapshot(home, current);
     if (predicate(snapshot)) return snapshot;
     await sleep(intervalMs);
   }
   throw new Error(errorMessage);
 }
-export async function stopAgentDaemon(home = stateHome()) {
+// Compatibility cleanup only: Personal web subagents run in-process, but the
+// upstream CLI may still have an on-demand agent daemon using the same state DB.
+export async function stopCliAgentDaemon(home = stateHome()) {
   const { config } = await runtimeConfig(home);
   const client = new LocalAgentClient({ stateDir: config.stateDir, requestTimeoutMs: 5_000 });
   const result = await client.stopForUpgrade();
   if (result.isErr() && result.error?.code === 'DAEMON_UNAVAILABLE') return { available: false };
-  if (result.isErr()) throw new Error(`Unable to stop local agent daemon (${result.error?.code ?? result.error?.message ?? 'unknown'})`);
+  if (result.isErr()) throw new Error(`Unable to stop CLI agent daemon (${result.error?.code ?? result.error?.message ?? 'unknown'})`);
   const probe = new LocalAgentClient({ stateDir: config.stateDir, requestTimeoutMs: 250 });
-  // Daemon shutdown can spend up to 10 seconds closing provider runtimes.
   for (let i = 0; i < 48; i++) {
     await sleep(250);
     const current = await probe.status();
     if (current.isErr() && current.error?.code === 'DAEMON_UNAVAILABLE') return { available: true, stopped: true };
   }
-  throw new Error('Local agent daemon accepted stop but did not exit');
+  throw new Error('CLI agent daemon accepted stop but did not exit');
 }
 export async function startRuntime(home = stateHome()) {
   const { personal, config, auth } = await runtimeSettings(home);
@@ -97,19 +80,23 @@ export async function startRuntime(home = stateHome()) {
   const installed = await readJson(new URL('../.personal-install.json', import.meta.url), null);
   const runtimeEnv = runtimeEnvironment(personal);
   const resolveSubagentsConfig = () => loadConfig(runtimeEnv).subagents;
-  const running = createServer(config, {
-    ...personalExtensions(config, {
+  const extensions = personalExtensions(config, {
       ...auth,
       codegraph: personal.codegraph,
-      stateHome: home,
       runtimeEnv,
       resolveSubagentsConfig,
-    }),
+    });
+  const running = createServer(config, {
+    ...extensions,
     resolveSubagentsConfig,
   });
-  running.app.get('/personal-healthz', (_request, response) => response.json({ name: 'personal-devspace', owner: ownerId(home), version: baseline.version,
+  running.app.get('/personal-healthz', (_request, response) => {
+    const agents = extensions.agentStatus();
+    response.json({ name: 'personal-devspace', owner: ownerId(home), version: baseline.version,
     overlayCommit: installed?.candidateHead ?? installed?.commit ?? 'development',
-    payloadSha256: installed?.payload?.sha256, runningProcesses: running.runningProcessCount() }));
+    payloadSha256: installed?.payload?.sha256, runningProcesses: running.runningProcessCount(),
+    activeAgentTurns: agents.activeTurns, agentRuntimeCount: agents.runtimeCount });
+  });
   let http;
   try {
     http = await new Promise((resolve, reject) => {

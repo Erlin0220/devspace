@@ -56,6 +56,7 @@ export interface LocalAgentRuntimePoolOptions {
  */
 export class LocalAgentRuntimePool {
   private readonly entries = new Map<string, RuntimeEntry>();
+  private readonly disposableRuntimes = new Set<LocalAgentRuntime>();
   private readonly now: () => number;
   private readonly logger?: LocalAgentRuntimePoolLogger;
   private readonly sessionIdleTimeoutMs: number;
@@ -78,6 +79,9 @@ export class LocalAgentRuntimePool {
     inputCallbacks?: LocalAgentRunCallbacks,
   ): Promise<BetterResult<LocalAgentRunResult, AgentProviderError>> {
     if (this.closing) return Result.err(poolClosedError(driver, context));
+    if (driver.reuseRuntime === false) {
+      return this.runDisposable(driver, context, input, inputCallbacks);
+    }
 
     let acquired = await this.acquire(driver, context);
     if (acquired.isErr()) return acquired;
@@ -129,6 +133,7 @@ export class LocalAgentRuntimePool {
         if (reservationError) throw reservationError;
         await inputCallbacks?.onSessionId?.(providerSessionId);
       },
+      onProcessId: inputCallbacks?.onProcessId,
     };
     const startedAt = this.now();
     try {
@@ -207,6 +212,48 @@ export class LocalAgentRuntimePool {
     }
   }
 
+  private async runDisposable(
+    driver: LocalAgentDriver,
+    context: LocalAgentRuntimeContext,
+    input: LocalAgentRunInput,
+    callbacks?: LocalAgentRunCallbacks,
+  ): Promise<BetterResult<LocalAgentRunResult, AgentProviderError>> {
+    const created = await driver.createRuntime(context);
+    if (created.isErr()) return created;
+    const runtime = created.value;
+    if (this.closing) {
+      await runtime.close().catch(() => {});
+      return Result.err(poolClosedError(driver, context));
+    }
+    this.disposableRuntimes.add(runtime);
+    try {
+      if (!runtime.isAlive()) {
+        return Result.err(new AgentProviderUnavailableError({
+          code: "PROVIDER_UNAVAILABLE",
+          provider: driver.provider,
+          agentId: context.agentId,
+          operation: "create_runtime",
+          retryable: true,
+          message: "Local agent runtime exited during startup.",
+        }));
+      }
+      return await runtime.run(input, callbacks);
+    } finally {
+      if (this.disposableRuntimes.delete(runtime)) {
+        try {
+          await runtime.close();
+        } catch (error) {
+          this.log("warn", "harness_runtime_close_failed", {
+            provider: driver.provider,
+            runtimeKeyHash: hashRuntimeKey(driver.runtimeKey(context)),
+            reason: "disposable_run_complete",
+            error: errorMessage(error),
+          });
+        }
+      }
+    }
+  }
+
   private async discardRuntime(
     entry: RuntimeEntry,
     provider: LocalAgentProvider,
@@ -241,14 +288,19 @@ export class LocalAgentRuntimePool {
     if (this.closePromise) return this.closePromise;
     this.closing = true;
     const entries = Array.from(this.entries.values());
+    const disposables = Array.from(this.disposableRuntimes);
     this.entries.clear();
-    this.closePromise = Promise.allSettled(entries.map((entry) => this.closeEntry(entry, "server_shutdown")))
+    this.disposableRuntimes.clear();
+    this.closePromise = Promise.allSettled([
+      ...entries.map((entry) => this.closeEntry(entry, "server_shutdown")),
+      ...disposables.map((runtime) => runtime.close()),
+    ])
       .then(() => undefined);
     return this.closePromise;
   }
 
   get size(): number {
-    return this.entries.size;
+    return this.entries.size + this.disposableRuntimes.size;
   }
 
   private async acquire(

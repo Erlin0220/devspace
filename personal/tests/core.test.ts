@@ -16,7 +16,6 @@ import { personalExtensions } from '../../src/personal/index.js';
 import { ReplayPool } from '../../src/personal/replay.js';
 import { PersonalCodeGraph, type CodeGraphOptions } from '../../src/personal/codegraph.js';
 import { PersonalSubagents } from '../../src/personal/subagents.js';
-import { AgentDaemonStartupError, AgentDaemonUnavailableError } from '../../src/local-agent-errors.js';
 import { WorkspaceRegistry } from '../../src/workspaces.js';
 
 const TOKEN = 'test-only-personal-token-not-a-real-secret';
@@ -108,10 +107,11 @@ test('native subagent tools bridge the existing agent runtime without MCP App me
     provider: 'codex', model: 'gpt-5.6-luna', effort: 'high', status: 'running' as const,
     createdAt: '2026-09-18T00:00:00.000Z', updatedAt: '2026-09-18T00:00:00.000Z' };
   const calls: string[] = [];
-  const subagents = new PersonalSubagents(config, {
+  const subagents = new PersonalSubagents({
     start: async input => { calls.push('start:' + input.target); return Result.ok(baseRecord); },
     get: async id => { calls.push('get:' + id); return Result.ok({ ...baseRecord, status: 'idle' as const, latestResponse: 'EXPLORER_OK' }); },
     continue: async id => { calls.push('continue:' + id); return Result.ok(baseRecord); },
+    review: async (id, action) => { calls.push('review:' + id + ':' + action); return Result.ok({ ...baseRecord, status: 'idle' as const }); },
     list: async () => { calls.push('list'); return Result.ok([{ ...baseRecord, status: 'idle' as const }]); },
   });
   const server = new McpServer({ name: 'subagent-test', version: '1' });
@@ -122,17 +122,23 @@ test('native subagent tools bridge the existing agent runtime without MCP App me
   t.after(async () => { await client.close(); await server.close(); });
 
   const tools = (await client.listTools()).tools;
-  for (const name of ['run_agent', 'get_agent', 'continue_agent', 'list_agents']) {
+  assert.equal(
+    tools.some(tool => /longrun/i.test(tool.name)),
+    false,
+    "Longrun task-graph tools must not reappear beside durable agent executions",
+  );
+  for (const name of ['run_agent', 'get_agent', 'continue_agent', 'review_agent', 'list_agents']) {
     const tool = tools.find(entry => entry.name === name);
     assert.ok(tool, name + ' should be registered');
     assert.doesNotMatch(JSON.stringify(tool), /resourceUri|ui\/resource/i);
   }
   const runAgentTool = tools.find(tool => tool.name === 'run_agent');
-  assert.match(runAgentTool?.description ?? '', /use get_agent to inspect it and continue_agent for another turn/i);
+  assert.match(runAgentTool?.description ?? '', /get_agent.*review_agent.*continue_agent/i);
   assert.doesNotMatch(runAgentTool?.description ?? '', /exec_command objective remains blocked/i);
   assert.doesNotMatch(runAgentTool?.description ?? '', /reuse that same agent/i);
   assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /high-level objective/i);
   assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /do not include credentials/i);
+  assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /goal/i);
   const run = await client.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex-explorer', prompt: 'inspect' } });
   assert.deepEqual(run.structuredContent, { id: 'agt_test', status: 'running' });
   const get = await client.callTool({ name: 'get_agent', arguments: { workspaceId: workspace.id, agentId: 'agt_test' } });
@@ -140,13 +146,15 @@ test('native subagent tools bridge the existing agent runtime without MCP App me
   assert.equal((get.structuredContent as { response?: string }).response, 'EXPLORER_OK');
   const continued = await client.callTool({ name: 'continue_agent', arguments: { workspaceId: workspace.id, agentId: 'agt_test', prompt: 'follow up' } });
   assert.deepEqual(continued.structuredContent, { id: 'agt_test', status: 'running' });
+  const reviewed = await client.callTool({ name: 'review_agent', arguments: { workspaceId: workspace.id, agentId: 'agt_test', action: 'approve' } });
+  assert.deepEqual(reviewed.structuredContent, { id: 'agt_test', status: 'completed' });
   const listed = await client.callTool({ name: 'list_agents', arguments: { workspaceId: workspace.id } });
   assert.deepEqual(listed.structuredContent, { agents: [{ id: 'agt_test', status: 'completed', target: 'codex-explorer' }] });
-  assert.deepEqual(calls, ['start:codex-explorer', 'get:agt_test', 'continue:agt_test', 'list']);
+  assert.deepEqual(calls, ['start:codex-explorer', 'get:agt_test', 'continue:agt_test', 'review:agt_test:approve', 'list']);
 
   const disabledConfig = { ...config, subagents: { ...config.subagents, enabled: false } };
   const disabledServer = new McpServer({ name: 'subagent-disabled-test', version: '1' });
-  new PersonalSubagents(disabledConfig, {
+  new PersonalSubagents({
     start: async () => Result.ok(baseRecord), get: async () => Result.ok(baseRecord),
     continue: async () => Result.ok(baseRecord), list: async () => Result.ok([]),
   }).register(disabledServer, new WorkspaceRegistry(disabledConfig));
@@ -155,58 +163,7 @@ test('native subagent tools bridge the existing agent runtime without MCP App me
   await Promise.all([disabledClient.connect(disabledClientTransport), disabledServer.connect(disabledServerTransport)]);
   t.after(async () => { await disabledClient.close(); await disabledServer.close(); });
   const disabledTools = (await disabledClient.listTools()).tools.map(tool => tool.name);
-  for (const name of ['run_agent', 'get_agent', 'continue_agent', 'list_agents']) assert.ok(disabledTools.includes(name));
-});
-
-test('run_agent retries one cold daemon startup failure but no other failure', async t => {
-  const root = await mkdtemp(join(tmpdir(), 'personal-subagent-retry-'));
-  const project = join(root, 'project'); await mkdir(project);
-  t.after(async () => { await rm(root, { recursive: true, force: true }); });
-  const loaded = loadConfig({ DEVSPACE_CONFIG_DIR: join(root, 'config'), DEVSPACE_ALLOWED_ROOTS: project,
-    DEVSPACE_STATE_DIR: join(root, 'state'), DEVSPACE_WORKTREE_ROOT: join(root, 'worktrees'), DEVSPACE_AGENT_DIR: join(root, 'agents'),
-    DEVSPACE_OAUTH_OWNER_TOKEN: 'separate-test-only-oauth-owner-token', DEVSPACE_TOOL_MODE: 'codex', DEVSPACE_WIDGETS: 'off',
-    DEVSPACE_SUBAGENTS: 'true', DEVSPACE_LOG_LEVEL: 'error', HOST: '127.0.0.1', PORT: '1', DEVSPACE_PUBLIC_BASE_URL: 'http://127.0.0.1:1' });
-  const config = { ...loaded, subagents: { enabled: true, providers: [{ id: 'codex' as const, enabled: true }] } };
-  const workspaces = new WorkspaceRegistry(config);
-  const workspace = (await workspaces.openWorkspace(project)).workspace;
-  const baseRecord = { id: 'agt_retry', workspaceId: workspace.id, workspaceRoot: project, profileName: 'codex',
-    provider: 'codex', status: 'running' as const, createdAt: '2026-09-21T00:00:00.000Z', updatedAt: '2026-09-21T00:00:00.000Z' };
-  let starts = 0;
-  const subagents = new PersonalSubagents(config, {
-    start: async () => {
-      starts++;
-      return starts === 1
-        ? Result.err(new AgentDaemonStartupError({ code: 'DAEMON_STARTUP_FAILURE', operation: 'startup', retryable: true, message: 'cold start' }))
-        : Result.ok(baseRecord);
-    },
-    get: async () => Result.ok(baseRecord), continue: async () => Result.ok(baseRecord), list: async () => Result.ok([]),
-  });
-  const server = new McpServer({ name: 'subagent-retry-test', version: '1' });
-  subagents.register(server, workspaces);
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: 'subagent-retry-client', version: '1' });
-  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
-  t.after(async () => { await client.close(); await server.close(); });
-  const retried = await client.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex', prompt: 'inspect' } });
-  assert.deepEqual(retried.structuredContent, { id: 'agt_retry', status: 'running' });
-  assert.equal(starts, 2);
-
-  let unavailableStarts = 0;
-  const noRetrySubagents = new PersonalSubagents(config, {
-    start: async () => { unavailableStarts++; return Result.err(new AgentDaemonUnavailableError({
-      code: 'DAEMON_UNAVAILABLE', operation: 'agent.start', retryable: true, message: 'unavailable',
-    })); },
-    get: async () => Result.ok(baseRecord), continue: async () => Result.ok(baseRecord), list: async () => Result.ok([]),
-  });
-  const noRetryServer = new McpServer({ name: 'subagent-no-retry-test', version: '1' });
-  noRetrySubagents.register(noRetryServer, workspaces);
-  const [noRetryClientTransport, noRetryServerTransport] = InMemoryTransport.createLinkedPair();
-  const noRetryClient = new Client({ name: 'subagent-no-retry-client', version: '1' });
-  await Promise.all([noRetryClient.connect(noRetryClientTransport), noRetryServer.connect(noRetryServerTransport)]);
-  t.after(async () => { await noRetryClient.close(); await noRetryServer.close(); });
-  const failed = await noRetryClient.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex', prompt: 'inspect' } });
-  assert.equal(failed.isError, true);
-  assert.equal(unavailableStarts, 1);
+  for (const name of ['run_agent', 'get_agent', 'continue_agent', 'review_agent', 'list_agents']) assert.ok(disabledTools.includes(name));
 });
 
 test('failed optional CodeGraph cannot block core open/read/command tools', async t => {

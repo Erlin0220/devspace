@@ -69,20 +69,9 @@ test('Control Center uses the Personal logo and keeps manual status checks out o
     readFile(new URL('../desktop/control.js', import.meta.url), 'utf8'),
   ]);
   assert.match(html, /personal-devspace-logo\.png/); assert.match(html, /id="check-status"/);
-  assert.match(html, /data-action="launch-qoder"/);
+  assert.doesNotMatch(html, /launch-qoder/);
   assert.match(script, /if \(name !== 'check'\) feedback\('正在处理…'\)/);
   assert.match(script, /requestAction === 'check'/);
-});
-test('Qoder launcher is a utility action and reports a transient launch notice', async () => {
-  let launched = 0;
-  const controller = createDesktopController({
-    status: async () => ({ running: true }),
-    'launch-qoder': async () => { launched += 1; },
-  }, { noticeTtl: 10 });
-  await controller.dispatch('launch-qoder');
-  assert.equal(launched, 1);
-  assert.match(controller.snapshot().notice ?? '', /Qoder CLI/);
-  await controller.dispose();
 });
 
 async function webFixture(t, { collide = false } = {}) {
@@ -115,8 +104,7 @@ test('Control Center enforces capability, origin, host, content type and bounded
   assert.equal((await post({ action: 'check', unexpected: true })).status, 400);
   assert.equal((await post({ action: 'project-root', projectRoot: 'x'.repeat(9000) })).status, 413);
   assert.equal((await post({ action: 'check' })).status, 200); assert.equal(f.events.length, 1);
-  assert.equal((await post({ action: 'launch-qoder' })).status, 200);
-  assert.equal(f.events.at(-1)?.[0], 'launch-qoder');
+  assert.equal((await post({ action: 'launch-qoder' })).status, 400);
 });
 test('busy preferred port falls back and preserves the other application', async t => {
   const f = await webFixture(t, { collide: true }); assert.notEqual(f.web.port, f.port);

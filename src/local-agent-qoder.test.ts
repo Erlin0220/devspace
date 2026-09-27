@@ -5,6 +5,7 @@ import { join, resolve } from "node:path";
 import {
   QoderCliLocalAgentDriver,
   qoderCliArgs,
+  qoderPrompt,
 } from "./local-agent-qoder.js";
 
 const context = {
@@ -72,6 +73,9 @@ assert.throws(
   }, "ignored", context.agentId),
   /retired Remote Control session/,
 );
+assert.equal(qoderPrompt({ prompt: "finish the project", executionMode: "goal", goalTurns: 321 }),
+  "/goal finish the project --turns 321");
+assert.equal(qoderPrompt({ prompt: "normal turn", executionMode: "turn" }), "normal turn");
 
 const driver = new QoderCliLocalAgentDriver({}, () => "/usr/local/bin/qodercli");
 assert.equal(driver.provider, "qoder");
@@ -106,7 +110,7 @@ try {
   }
 
   const runtimeDriver = new QoderCliLocalAgentDriver(
-    { ...process.env, QODER_TEST_MARKER: marker },
+    { ...process.env, QODER_TEST_MARKER: marker, DEVSPACE_QODER_VISIBLE_TERMINAL: "0" },
     () => command,
   );
   const created = await runtimeDriver.createRuntime({

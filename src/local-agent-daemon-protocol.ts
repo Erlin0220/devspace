@@ -301,7 +301,8 @@ function decodeWriteMode(value: unknown): LocalAgentWriteMode | undefined {
 }
 
 function isLocalAgentStatus(value: string): value is LocalAgentStatus {
-  return value === "starting" || value === "running" || value === "idle" || value === "error" || value === "stopped";
+  return value === "starting" || value === "running" || value === "awaiting_review"
+    || value === "idle" || value === "error" || value === "stopped";
 }
 
 function requiredString(value: unknown, field: string): string {

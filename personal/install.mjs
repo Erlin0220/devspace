@@ -7,14 +7,13 @@ import { atomicJson, readJson, secureStateDirectory, stateHome, statePath } from
 import { inspectCandidate, payloadDigest, verifyCandidate } from './artifact.mjs';
 import { readPersonalAuth, readPersonalConfig } from './config.mjs';
 import { installerRunning, jobAction, registerDesktopEntries, registerJobs } from './desktop/platform.mjs';
-import { stopAgentDaemon, waitForRuntime } from './runtime.mjs';
+import { stopCliAgentDaemon, waitForRuntime } from './runtime.mjs';
 import { runNpmCommand } from './verification.mjs';
 import { legacyTasksAction } from './legacy-import.mjs';
 
 const installerRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const terminalInstallStates = new Set(['installed', 'failed']);
 const attemptPath = home => statePath(home, 'installAttempt');
-const queuePath = home => statePath(home, 'installQueue');
 async function report(home, requestId, value) {
   // Progress is optional; its failure must not roll back a healthy installed runtime.
   try {
@@ -117,7 +116,7 @@ async function installPersonal(source, home = stateHome(), { requestId, expected
   const result = await activateCandidate({ paused: config.paused,
     stop: async () => {
       try {
-        await stopAgentDaemon(home);
+        await stopCliAgentDaemon(home);
         if (previous) await stopOwn(home); else await legacyTasksAction(home, 'stop');
       }
       catch (error) {
@@ -172,47 +171,35 @@ async function requestInstall(source, home = stateHome(), { expectedCandidateHea
   }
   await secureStateDirectory(home);
   const requestId = randomUUID();
-  const lock = queuePath(home);
-  const previousLock = await readJson(lock, null).catch(() => null);
-  if (previousLock) {
-    const age = Date.now() - Date.parse(previousLock.createdAt ?? '');
-    if (await installerRunning(home)) throw new Error('Another installation request is being queued');
-    let ownerAlive = false;
-    if (Number.isInteger(previousLock.pid) && previousLock.pid > 0) {
-      try { process.kill(previousLock.pid, 0); ownerAlive = true; }
-      catch (error) { if (error.code !== 'ESRCH') ownerAlive = true; }
+  const path = attemptPath(home);
+  if (await installerRunning(home)) throw new Error('An installer is already running');
+  const existing = await readJson(path, null).catch(() => null);
+  let recoveredFrom;
+  if (existing) {
+    if (!terminalInstallStates.has(existing.status)) {
+      recoveredFrom = { requestId: existing.requestId, status: existing.status,
+        error: 'stale attempt recovered because no installer was running' };
     }
-    if (ownerAlive && (!Number.isFinite(age) || age < 5 * 60_000)) throw new Error('Another installation request is being queued');
-    await rm(lock, { force: true });
+    await rm(path, { force: true });
   }
-  if (!await atomicJson(lock, { schema: 1, requestId, pid: process.pid, createdAt: new Date().toISOString() }, { createOnly: true })) {
+  const sourcePath = resolve(source);
+  const attempt = {
+    schema: 1,
+    requestId,
+    source: sourcePath,
+    home,
+    candidateHead: manifest.candidateHead,
+    payloadSha256: manifest.payload.sha256,
+    status: 'queued',
+    queuedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    ...(recoveredFrom ? { recoveredFrom } : {}),
+  };
+  if (!await atomicJson(path, attempt, { createOnly: true })) {
     throw new Error('Another installation request won the queue race');
   }
   try {
     if (await installerRunning(home)) throw new Error('An installer is already running');
-    const path = attemptPath(home);
-    const existing = await readJson(path, null).catch(() => null);
-    let recoveredFrom;
-    if (existing) {
-      if (!terminalInstallStates.has(existing.status)) {
-        recoveredFrom = { requestId: existing.requestId, status: existing.status, error: 'stale attempt recovered because no installer was running' };
-      }
-      await rm(path, { force: true });
-    }
-    const sourcePath = resolve(source);
-    const attempt = {
-      schema: 1,
-      requestId,
-      source: sourcePath,
-      home,
-      candidateHead: manifest.candidateHead,
-      payloadSha256: manifest.payload.sha256,
-      status: 'queued',
-      queuedAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      ...(recoveredFrom ? { recoveredFrom } : {}),
-    };
-    if (!await atomicJson(path, attempt, { createOnly: true })) throw new Error('Another installation request won the queue race');
     // The OS-owned installer always runs the already executing/trusted Personal
     // implementation. Candidate code is data until verifyCandidate() succeeds.
     await registerJobs(home, installerRoot, ['installer'], { record: false });
@@ -222,8 +209,6 @@ async function requestInstall(source, home = stateHome(), { expectedCandidateHea
     await report(home, requestId, { status: 'failed', error: error.message });
     if (!await installerRunning(home).catch(() => true)) await jobAction(home, 'installer', 'remove').catch(() => {});
     throw error;
-  } finally {
-    await rm(lock, { force: true }).catch(() => {});
   }
 }
 export async function runInstaller(home = stateHome()) {

@@ -121,6 +121,95 @@ assert.equal(unwrap(first).finalResponse, "done:inspect");
 assert.equal(unwrap(second).finalResponse, "done:second");
 assert.equal(runtime.runCount, 2);
 
+{
+  let closeCount = 0;
+  let sessionId: string | undefined;
+  let processId: number | undefined;
+  const disposableRuntime: LocalAgentRuntime = {
+    provider: "qoder",
+    async run(_input, callbacks) {
+      await callbacks?.onSessionId?.("qoder-session");
+      await callbacks?.onProcessId?.(4242);
+      return Result.ok({
+        provider: "qoder",
+        providerSessionId: "qoder-session",
+        processId: 4242,
+        finalResponse: "done",
+        items: [],
+      });
+    },
+    async releaseSession() {},
+    async close() { closeCount += 1; },
+    isAlive: () => true,
+  };
+  const disposableDriver: LocalAgentDriver = {
+    provider: "qoder",
+    reuseRuntime: false,
+    runtimeKey: () => "qoder-disposable",
+    createRuntime: async () => Result.ok(disposableRuntime),
+  };
+  const disposablePool = new LocalAgentRuntimePool();
+  const result = await disposablePool.run(
+    disposableDriver,
+    { ...context, provider: "qoder" },
+    input,
+    {
+      onSessionId: (value) => { sessionId = value; },
+      onProcessId: (value) => { processId = value; },
+    },
+  );
+  assert.equal(result.isOk(), true);
+  assert.equal(sessionId, "qoder-session");
+  assert.equal(processId, 4242);
+  assert.equal(closeCount, 1, "disposable runtimes close immediately after one execution");
+  assert.equal(disposablePool.size, 0, "disposable runtimes never enter the shared pool");
+  await disposablePool.close();
+}
+
+{
+  let closeCount = 0;
+  let releaseRun!: () => void;
+  const blocked = new Promise<void>((resolve) => { releaseRun = resolve; });
+  const disposableRuntime: LocalAgentRuntime = {
+    provider: "qoder",
+    async run() {
+      await blocked;
+      return Result.err(new AgentProviderExecutionError({
+        code: "PROVIDER_EXECUTION_ERROR",
+        provider: "qoder",
+        operation: "run",
+        retryable: true,
+        message: "stopped by shutdown",
+      }));
+    },
+    async releaseSession() {},
+    async close() {
+      closeCount += 1;
+      releaseRun();
+    },
+    isAlive: () => true,
+  };
+  const disposableDriver: LocalAgentDriver = {
+    provider: "qoder",
+    reuseRuntime: false,
+    runtimeKey: () => "qoder-disposable-shutdown",
+    createRuntime: async () => Result.ok(disposableRuntime),
+  };
+  const disposablePool = new LocalAgentRuntimePool();
+  const runningDisposable = disposablePool.run(
+    disposableDriver,
+    { ...context, provider: "qoder" },
+    input,
+  );
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(disposablePool.size, 1);
+  await disposablePool.close();
+  const stopped = await runningDisposable;
+  assert.equal(stopped.isErr(), true);
+  assert.equal(closeCount, 1, "pool shutdown interrupts an active disposable runtime exactly once");
+  assert.equal(disposablePool.size, 0);
+}
+
 const running = pool.run(driver, context, { ...input, prompt: "wait", providerSessionId: "thread_1" });
 await new Promise<void>((resolve) => setImmediate(resolve));
 await pool.evictIdle(Date.now() + 10_000_000);

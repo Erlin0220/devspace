@@ -1,7 +1,7 @@
 import type { LocalAgentCatalog } from "./local-agent-catalog.js";
 import type { LocalAgentRecord, LocalAgentStatus } from "./local-agent-store.js";
 
-export type AgentCommandStatus = "running" | "completed" | "failed" | "stopped";
+export type AgentCommandStatus = "running" | "awaiting_review" | "completed" | "failed" | "stopped";
 
 export type AgentTargetOutput =
   | {
@@ -26,6 +26,7 @@ export interface AgentTargetCatalogOutput {
 export interface AgentReceiptOutput {
   id: string;
   status: AgentCommandStatus;
+  mode?: "turn" | "goal";
 }
 
 export interface AgentSummaryOutput extends AgentReceiptOutput {
@@ -40,6 +41,14 @@ export interface AgentFailureOutput {
 
 export type AgentObservationOutput =
   | { id: string; status: "running" }
+  | {
+      id: string;
+      status: "awaiting_review";
+      response?: string;
+      attempts?: number;
+      maxAttempts?: number;
+      graderResults?: LocalAgentRecord["graderResults"];
+    }
   | { id: string; status: "completed"; response?: string }
   | { id: string; status: "failed"; error: AgentFailureOutput }
   | { id: string; status: "stopped"; error?: AgentFailureOutput };
@@ -68,7 +77,11 @@ export function presentAgentTargetCatalog(catalog: LocalAgentCatalog): AgentTarg
 }
 
 export function presentAgentReceipt(record: LocalAgentRecord): AgentReceiptOutput {
-  return { id: record.id, status: presentAgentStatus(record.status) };
+  return {
+    id: record.id,
+    status: presentAgentStatus(record.status),
+    ...(record.executionMode ? { mode: record.executionMode } : {}),
+  };
 }
 
 export function presentAgentSummary(record: LocalAgentRecord): AgentSummaryOutput {
@@ -78,6 +91,15 @@ export function presentAgentSummary(record: LocalAgentRecord): AgentSummaryOutpu
 export function presentAgentObservation(record: LocalAgentRecord): AgentObservationOutput {
   const receipt = presentAgentReceipt(record);
   switch (receipt.status) {
+    case "awaiting_review":
+      return {
+        id: receipt.id,
+        status: "awaiting_review",
+        ...(record.latestResponse === undefined ? {} : { response: record.latestResponse }),
+        ...(record.attempts === undefined ? {} : { attempts: record.attempts }),
+        ...(record.maxAttempts === undefined ? {} : { maxAttempts: record.maxAttempts }),
+        ...(record.graderResults?.length ? { graderResults: record.graderResults } : {}),
+      };
     case "completed":
       return {
         ...receipt,
@@ -121,6 +143,12 @@ export function formatAgentSummary(summary: AgentSummaryOutput): string {
 
 export function formatAgentObservation(observation: AgentObservationOutput): string {
   const line = formatAgentReceipt(observation);
+  if (observation.status === "awaiting_review") {
+    const graders = observation.graderResults?.map((grader) => (
+      `${grader.command}: ${grader.timedOut ? "timed out" : `exit ${grader.exitCode ?? "unknown"}`}`
+    )).join("\n");
+    return [line, observation.response, graders].filter(Boolean).join("\n\n");
+  }
   if (observation.status === "completed" && observation.response !== undefined) {
     return `${line}\n\n${observation.response}`;
   }
@@ -136,6 +164,8 @@ function presentAgentStatus(status: LocalAgentStatus): AgentCommandStatus {
     case "starting":
     case "running":
       return "running";
+    case "awaiting_review":
+      return "awaiting_review";
     case "idle":
       return "completed";
     case "error":

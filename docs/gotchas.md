@@ -233,6 +233,10 @@ serve` is not a prerequisite.
 `devspace agents ls` lists existing subagent sessions, not profile
 definitions.
 
+Personal Web MCP uses its already-long-lived Personal Runtime instead of
+starting `devspace-agentd`. Its `run_agent` tool persists the same logical
+agent/session identity directly and `mode=goal` uses Qoder's native Goal mode.
+
 For a Coding Agent, run the installation command printed by
 `devspace init`:
 

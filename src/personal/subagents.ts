@@ -1,14 +1,11 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Result as BetterResult } from "better-result";
 import * as z from "zod/v4";
-import type { ServerConfig } from "../config.js";
-import {
-  createLocalAgentClient,
-  type LocalAgentClient,
-} from "../local-agent-client.js";
 import {
   toAgentErrorPayload,
   type LocalAgentError,
 } from "../local-agent-errors.js";
+import type { AgentReviewAction } from "../local-agent-manager.js";
 import {
   formatAgentObservation,
   formatAgentReceipt,
@@ -23,9 +20,25 @@ import type {
 } from "../local-agent-store.js";
 import type { WorkspaceRegistry } from "../workspaces.js";
 
-type PersonalSubagentClient = Pick<LocalAgentClient, "start" | "get" | "continue" | "list">;
+export interface PersonalSubagentClient {
+  start: (input: import("../local-agent-manager.js").StartLocalAgentInput) => Promise<BetterResult<LocalAgentRecord, LocalAgentError>>;
+  get: (agentId: string, scope: LocalAgentWorkspaceScope) => Promise<BetterResult<LocalAgentRecord, LocalAgentError>>;
+  continue: (
+    agentId: string,
+    prompt: string,
+    overrides: import("../local-agent-manager.js").RunOverrides,
+    scope: LocalAgentWorkspaceScope,
+  ) => Promise<BetterResult<LocalAgentRecord, LocalAgentError>>;
+  list: (scope: LocalAgentWorkspaceScope) => Promise<BetterResult<LocalAgentRecord[], LocalAgentError>>;
+  review?: (
+    agentId: string,
+    action: AgentReviewAction,
+    note: string | undefined,
+    scope: LocalAgentWorkspaceScope,
+  ) => Promise<BetterResult<LocalAgentRecord, LocalAgentError>>;
+}
 
-const agentStatusSchema = z.enum(["running", "completed", "failed", "stopped"]);
+const agentStatusSchema = z.enum(["running", "awaiting_review", "completed", "failed", "stopped"]);
 const agentFailureSchema = z.object({
   code: z.string(),
   message: z.string(),
@@ -34,11 +47,21 @@ const agentFailureSchema = z.object({
 const agentReceiptOutputSchema = {
   id: z.string(),
   status: agentStatusSchema,
+  mode: z.enum(["turn", "goal"]).optional(),
 };
+const graderResultSchema = z.object({
+  command: z.string(),
+  exitCode: z.number().int().optional(),
+  timedOut: z.boolean(),
+  output: z.string(),
+});
 const agentObservationOutputSchema = {
   ...agentReceiptOutputSchema,
   response: z.string().optional(),
   error: agentFailureSchema.optional(),
+  attempts: z.number().int().optional(),
+  maxAttempts: z.number().int().optional(),
+  graderResults: z.array(graderResultSchema).optional(),
 };
 const agentSummarySchema = z.object({
   ...agentReceiptOutputSchema,
@@ -49,13 +72,9 @@ const agentListOutputSchema = {
 };
 
 export class PersonalSubagents {
-  private readonly client: PersonalSubagentClient;
-
   constructor(
-    private readonly config: ServerConfig,
-    client: PersonalSubagentClient = createLocalAgentClient(config),
+    private readonly client: PersonalSubagentClient,
   ) {
-    this.client = client;
   }
 
   register(server: McpServer, workspaces: WorkspaceRegistry): void {
@@ -64,7 +83,7 @@ export class PersonalSubagents {
       {
         title: "Run DevSpace subagent",
         description:
-          "Start a bounded DevSpace subagent in the current workspace using an advertised profile or enabled provider. The subagent runs independently; use get_agent to inspect it and continue_agent for another turn.",
+          "Start a durable DevSpace subagent execution in the current workspace using an advertised profile or enabled provider. Use mode=goal for Qoder native Goal work. The execution runs independently; inspect it with get_agent, use review_agent for supervisor decisions, and continue_agent for ordinary follow-up turns.",
         inputSchema: {
           workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
           target: z.string().min(1).describe(
@@ -73,6 +92,15 @@ export class PersonalSubagents {
           prompt: z.string().min(1).describe(
             "Self-contained task brief. Include the objective, relevant constraints/context, and expected result. For command-recovery delegation, describe the legitimate high-level objective instead of copying or disguising a rejected command, and do not include credentials.",
           ),
+          mode: z.enum(["turn", "goal"]).optional().describe(
+            "Use goal for a durable Qoder native Goal execution. Defaults to a normal bounded turn.",
+          ),
+          goalTurns: z.number().int().min(1).max(5_000).optional(),
+          graderCommands: z.array(z.string().min(1).max(8_000)).max(20).optional(),
+          requireReview: z.boolean().optional().describe(
+            "Keep successful work awaiting independent supervisor review. Defaults to true for goal mode.",
+          ),
+          maxAttempts: z.number().int().min(1).max(5).optional(),
         },
         outputSchema: agentReceiptOutputSchema,
         annotations: {
@@ -82,23 +110,60 @@ export class PersonalSubagents {
           openWorldHint: true,
         },
       },
-      async ({ workspaceId, target, prompt }) => {
+      async ({ workspaceId, target, prompt, mode, goalTurns, graderCommands, requireReview, maxAttempts }) => {
         const workspace = workspaces.getWorkspace(workspaceId);
         const input = {
           target,
           prompt,
           workspaceId,
           workspaceRoot: workspace.root,
+          executionMode: mode,
+          goalTurns,
+          graderCommands,
+          requireReview,
+          maxAttempts,
         };
-        let result = await this.client.start(input);
-        if (result.isErr()) {
-          const failure = toAgentErrorPayload(result.error);
-          // DAEMON_STARTUP_FAILURE is produced before agent.start is sent, so one
-          // retry can absorb a cold daemon startup without duplicating an agent.
-          if (failure.code === "DAEMON_STARTUP_FAILURE" && failure.retryable === true) {
-            result = await this.client.start(input);
-          }
+        const result = await this.client.start(input);
+        return result.isErr()
+          ? agentErrorResponse(result.error)
+          : agentReceiptResponse(result.value);
+      },
+    );
+
+    server.registerTool(
+      "review_agent",
+      {
+        title: "Review DevSpace subagent",
+        description:
+          "Apply an independent supervisor decision to an agent awaiting review. Retry continues the same provider session with the supplied evidence; approve accepts the result; reject marks it failed.",
+        inputSchema: {
+          workspaceId: z.string().describe("Workspace identifier used to start the subagent."),
+          agentId: z.string().min(1).describe("Agent identifier returned by run_agent."),
+          action: z.enum(["approve", "retry", "reject"]),
+          note: z.string().max(8_000).optional(),
+        },
+        outputSchema: agentReceiptOutputSchema,
+        annotations: {
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: false,
+        },
+      },
+      async ({ workspaceId, agentId, action, note }) => {
+        const workspace = workspaces.getWorkspace(workspaceId);
+        if (!this.client.review) {
+          return {
+            content: [{ type: "text" as const, text: "AGENT_REVIEW_UNAVAILABLE: Supervisor review is not available." }],
+            isError: true,
+          };
         }
+        const result = await this.client.review(
+          agentId,
+          action,
+          note,
+          workspaceScope(workspaceId, workspace.root),
+        );
         return result.isErr()
           ? agentErrorResponse(result.error)
           : agentReceiptResponse(result.value);

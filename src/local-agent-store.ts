@@ -3,8 +3,17 @@ import { resolve } from "node:path";
 import { Result, type Result as BetterResult } from "better-result";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 import { AgentStoreError, isProgrammerDefect } from "./local-agent-errors.js";
+import type { LocalAgentExecutionMode } from "./local-agent-runtime.js";
 
-export type LocalAgentStatus = "starting" | "running" | "idle" | "error" | "stopped";
+export type LocalAgentStatus = "starting" | "running" | "awaiting_review" | "idle" | "error" | "stopped";
+export type LocalAgentReviewStatus = "not_required" | "pending" | "approved" | "rejected";
+
+export interface LocalAgentGraderResult {
+  command: string;
+  exitCode?: number;
+  timedOut: boolean;
+  output: string;
+}
 
 export interface LocalAgentRecord {
   id: string;
@@ -15,6 +24,16 @@ export interface LocalAgentRecord {
   model?: string;
   effort?: string;
   providerSessionId?: string;
+  executionMode?: LocalAgentExecutionMode;
+  goalTurns?: number;
+  requireReview?: boolean;
+  reviewStatus?: LocalAgentReviewStatus;
+  reviewNote?: string;
+  attempts?: number;
+  maxAttempts?: number;
+  graderCommands?: string[];
+  graderResults?: LocalAgentGraderResult[];
+  processId?: number;
   status: LocalAgentStatus;
   latestResponse?: string;
   error?: string;
@@ -31,6 +50,11 @@ export interface CreateLocalAgentRecordInput {
   provider: string;
   model?: string;
   effort?: string;
+  executionMode?: LocalAgentExecutionMode;
+  goalTurns?: number;
+  requireReview?: boolean;
+  maxAttempts?: number;
+  graderCommands?: string[];
 }
 
 export interface LocalAgentWorkspaceScope {
@@ -52,6 +76,16 @@ interface LocalAgentRow {
   model: string | null;
   effort: string | null;
   provider_session_id: string | null;
+  execution_mode: string | null;
+  goal_turns: number | null;
+  require_review: string | null;
+  review_status: string | null;
+  review_note: string | null;
+  attempts: number | null;
+  max_attempts: number | null;
+  grader_commands: string | null;
+  grader_results: string | null;
+  process_id: number | null;
   status: string;
   latest_response: string | null;
   error: string | null;
@@ -117,6 +151,14 @@ export class LocalAgentStore {
       provider: input.provider,
       model: input.model,
       effort: input.effort,
+      executionMode: input.executionMode ?? "turn",
+      goalTurns: input.goalTurns,
+      requireReview: input.requireReview ?? input.executionMode === "goal",
+      reviewStatus: input.requireReview || input.executionMode === "goal" ? "pending" : "not_required",
+      attempts: 0,
+      maxAttempts: input.maxAttempts ?? 5,
+      graderCommands: input.graderCommands ?? [],
+      graderResults: [],
       status: "starting",
       createdAt: now,
       updatedAt: now,
@@ -132,10 +174,18 @@ export class LocalAgentStore {
           provider,
           model,
           effort,
+          execution_mode,
+          goal_turns,
+          require_review,
+          review_status,
+          attempts,
+          max_attempts,
+          grader_commands,
+          grader_results,
           status,
           created_at,
           updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.id,
@@ -145,6 +195,14 @@ export class LocalAgentStore {
         record.provider,
         record.model ?? null,
         record.effort ?? null,
+        record.executionMode,
+        record.goalTurns ?? null,
+        String(record.requireReview),
+        record.reviewStatus,
+        record.attempts,
+        record.maxAttempts,
+        JSON.stringify(record.graderCommands),
+        JSON.stringify(record.graderResults),
         record.status,
         record.createdAt,
         record.updatedAt,
@@ -200,6 +258,16 @@ export class LocalAgentStore {
           model = ?,
           effort = ?,
           provider_session_id = ?,
+          execution_mode = ?,
+          goal_turns = ?,
+          require_review = ?,
+          review_status = ?,
+          review_note = ?,
+          attempts = ?,
+          max_attempts = ?,
+          grader_commands = ?,
+          grader_results = ?,
+          process_id = ?,
           status = ?,
           latest_response = ?,
           error = ?,
@@ -216,6 +284,16 @@ export class LocalAgentStore {
         updated.model ?? null,
         updated.effort ?? null,
         updated.providerSessionId ?? null,
+        updated.executionMode,
+        updated.goalTurns ?? null,
+        String(updated.requireReview),
+        updated.reviewStatus,
+        updated.reviewNote ?? null,
+        updated.attempts,
+        updated.maxAttempts,
+        JSON.stringify(updated.graderCommands),
+        JSON.stringify(updated.graderResults),
+        updated.processId ?? null,
         updated.status,
         updated.latestResponse ?? null,
         updated.error ?? null,
@@ -235,12 +313,13 @@ export class LocalAgentStore {
     return storeResult("update", () => this.update(id, patch));
   }
 
-  reconcileActiveRuns(message = "DevSpace restarted while this agent turn was running."): number {
+  reconcileActiveRuns(message = "DevSpace restarted while this agent execution was running."): number {
     const now = new Date().toISOString();
     const result = this.database.sqlite
       .prepare(
         `update local_agent_sessions
-         set status = 'error', error = ?, error_code = 'DAEMON_UNAVAILABLE', error_retryable = 'true', updated_at = ?
+         set status = 'error', error = ?, error_code = 'AGENT_EXECUTION_INTERRUPTED', error_retryable = 'true',
+             process_id = null, updated_at = ?
          where status in ('starting', 'running')`,
       )
       .run(message, now);
@@ -248,7 +327,7 @@ export class LocalAgentStore {
   }
 
   reconcileActiveRunsResult(
-    message = "DevSpace restarted while this agent turn was running.",
+    message = "DevSpace restarted while this agent execution was running.",
   ): BetterResult<number, AgentStoreError> {
     return storeResult("reconcile_active_runs", () => this.reconcileActiveRuns(message));
   }
@@ -273,6 +352,16 @@ function rowToLocalAgentRecord(row: LocalAgentRow): LocalAgentRecord {
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
     providerSessionId: row.provider_session_id ?? undefined,
+    executionMode: readExecutionMode(row.execution_mode),
+    goalTurns: row.goal_turns ?? undefined,
+    requireReview: readOptionalBoolean(row.require_review) ?? false,
+    reviewStatus: readReviewStatus(row.review_status),
+    reviewNote: row.review_note ?? undefined,
+    attempts: row.attempts ?? 0,
+    maxAttempts: row.max_attempts ?? 5,
+    graderCommands: readJsonArray(row.grader_commands),
+    graderResults: readGraderResults(row.grader_results),
+    processId: row.process_id ?? undefined,
     status: readStatus(row.status),
     latestResponse: row.latest_response ?? undefined,
     error: row.error ?? undefined,
@@ -289,6 +378,52 @@ function readOptionalBoolean(value: string | null): boolean | undefined {
   return undefined;
 }
 
+function readExecutionMode(value: string | null): LocalAgentExecutionMode {
+  return value === "goal" ? "goal" : "turn";
+}
+
+function readReviewStatus(value: string | null): LocalAgentReviewStatus {
+  if (value === "pending" || value === "approved" || value === "rejected") return value;
+  return "not_required";
+}
+
+function readJsonArray(value: string | null): string[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.filter((entry): entry is string => typeof entry === "string")
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function readGraderResults(value: string | null): LocalAgentGraderResult[] {
+  if (!value) return [];
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.flatMap((entry): LocalAgentGraderResult[] => {
+      if (!entry || typeof entry !== "object") return [];
+      const record = entry as Record<string, unknown>;
+      if (
+        typeof record.command !== "string"
+        || typeof record.timedOut !== "boolean"
+        || typeof record.output !== "string"
+      ) return [];
+      return [{
+        command: record.command,
+        timedOut: record.timedOut,
+        output: record.output,
+        ...(typeof record.exitCode === "number" ? { exitCode: record.exitCode } : {}),
+      }];
+    });
+  } catch {
+    return [];
+  }
+}
+
 function storeResult<T>(operation: string, run: () => T): BetterResult<T, AgentStoreError> {
   try {
     return Result.ok(run());
@@ -302,6 +437,7 @@ function readStatus(status: string): LocalAgentStatus {
   if (
     status === "starting" ||
     status === "running" ||
+    status === "awaiting_review" ||
     status === "idle" ||
     status === "error" ||
     status === "stopped"

@@ -3,6 +3,7 @@ import type { AgentProviderError } from "./local-agent-errors.js";
 import type { LocalAgentProvider } from "./local-agent-profiles.js";
 
 export type LocalAgentWriteMode = "read_only" | "allowed" | "full_access";
+export type LocalAgentExecutionMode = "turn" | "goal";
 
 const ALL_WRITE_MODES: readonly LocalAgentWriteMode[] = [
   "read_only",
@@ -29,6 +30,8 @@ export interface LocalAgentRunInput {
   prompt: string;
   workspaceRoot: string;
   providerSessionId?: string;
+  executionMode?: LocalAgentExecutionMode;
+  goalTurns?: number;
   writeMode?: LocalAgentWriteMode;
   model?: string;
   effort?: string;
@@ -41,6 +44,7 @@ export interface LocalAgentRunResult {
   providerSessionId: string | null;
   finalResponse: string;
   items: unknown[];
+  processId?: number;
 }
 
 export interface LocalAgentRunCallbacks {
@@ -50,6 +54,7 @@ export interface LocalAgentRunCallbacks {
    * could otherwise fail and lose that identity.
    */
   onSessionId?: (providerSessionId: string) => void | Promise<void>;
+  onProcessId?: (processId: number) => void | Promise<void>;
 }
 
 export interface LocalAgentRuntimeContext {
@@ -84,4 +89,5 @@ export interface LocalAgentDriver {
   runtimeKey(context: LocalAgentRuntimeContext): string;
   createRuntime(context: LocalAgentRuntimeContext): Promise<Result<LocalAgentRuntime, AgentProviderError>>;
   readonly idleTimeoutMs?: number;
+  readonly reuseRuntime?: boolean;
 }

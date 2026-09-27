@@ -18,7 +18,7 @@ recurring runtime capability.
 
 Authentication, process ownership and credential origin binding fail closed.
 Installation is a forced switch: active shell commands and subagent turns do not
-delay an approved upgrade; the owned Runtime and agent daemon are stopped as part
+delay an approved upgrade; the owned Runtime is stopped as part
 of activation. UI, log cache, diagnostics and optional extensions
 fail independently. Never reinterpret a successful command as verified native
 UI, current-host schema refresh, installation success or cross-platform coverage.

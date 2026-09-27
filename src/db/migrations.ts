@@ -37,6 +37,11 @@ const migrations: Migration[] = [
     name: "local-agent-effort-rename",
     up: migrateLocalAgentEffortRename,
   },
+  {
+    version: 7,
+    name: "durable-agent-executions",
+    up: migrateDurableAgentExecutions,
+  },
 ];
 
 export function migrateDatabase(sqlite: Database.Database): void {
@@ -233,6 +238,19 @@ function migrateLocalAgentEffortRename(sqlite: Database.Database): void {
     return;
   }
   sqlite.exec("alter table local_agent_sessions rename column thinking to effort");
+}
+
+function migrateDurableAgentExecutions(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, "local_agent_sessions", "execution_mode", "text not null default 'turn'");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "goal_turns", "integer");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "require_review", "text not null default 'false'");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "review_status", "text not null default 'not_required'");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "review_note", "text");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "attempts", "integer not null default 0");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "max_attempts", "integer not null default 5");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "grader_commands", "text not null default '[]'");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "grader_results", "text not null default '[]'");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "process_id", "integer");
 }
 
 function addColumnIfMissing(

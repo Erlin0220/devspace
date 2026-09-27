@@ -72,7 +72,7 @@ export class PersonalSubagentConfig {
       {
         title: "Update DevSpace subagent config",
         description:
-          "Patch provider enabled/model/effort settings and default/read-only/writable routing priority. Changes affect subsequent agent starts and newly-dispatched long-run tasks without restarting Personal DevSpace.",
+          "Patch provider enabled/model/effort settings and default/read-only/writable routing priority. Changes affect subsequent agent starts without restarting Personal DevSpace.",
         inputSchema: {
           enabled: z.boolean().optional(),
           providers: z.array(providerPatchSchema).max(LOCAL_AGENT_PROVIDERS.length).optional(),

@@ -7,11 +7,10 @@ import { atomicJson, readJson, stateHome, statePath } from '../state.mjs';
 import { approvedProjectRoot, readPersonalAuth, readPersonalConfig } from '../config.mjs';
 import { runtimeConfig, runtimeSnapshot, waitForRuntime } from '../runtime.mjs';
 import { readUpstreamBaseline } from '../upstream.mjs';
-import { resolveQoderCommand } from '../../dist/local-agent-qoder.js';
 import { discoverStable, prepareStable } from '../upgrade.mjs';
 import { createDesktopController } from './controller.mjs';
 import { startLocalControl } from './local-control.mjs';
-import { chooseFolder, installRecord, jobAction, jobStatus, launchQoderCli, openBrowser, openLogs, registerDesktopEntries, registerJobs, serviceComponents } from './platform.mjs';
+import { chooseFolder, installRecord, jobAction, jobStatus, openBrowser, openLogs, registerDesktopEntries, registerJobs, serviceComponents } from './platform.mjs';
 import semver from 'semver';
 
 const packageRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)));
@@ -44,7 +43,7 @@ export async function status(home = stateHome()) {
     allowedRoots: config.allowedRoots, endpoint: `${runtime.origin}/mcp`,
     apiTokenConfigured: Boolean(auth.apiToken), codegraphEnabled: personal.codegraph?.enabled === true,
     runningProcesses: runtime.runningProcesses,
-    activeAgentTurns: runtime.activeAgentTurns, agentRuntimeCount: runtime.agentRuntimeCount, agentStatusError: runtime.agentStatusError,
+    activeAgentTurns: runtime.activeAgentTurns, agentRuntimeCount: runtime.agentRuntimeCount,
     overlayCommit: runtime.overlayCommit,
     candidate: await candidateStatus(home, installation),
     installation };
@@ -53,7 +52,6 @@ async function requireIdle(home) {
   const snapshot = await runtimeSnapshot(home);
   if (snapshot.runningProcesses > 0) throw new Error('仍有命令正在执行，请结束任务后再操作');
   if (snapshot.activeAgentTurns > 0) throw new Error('仍有子代理任务正在执行，请结束任务后再操作');
-  if (snapshot.activeAgentTurns === null) throw new Error('无法确认子代理是否空闲，请检查诊断后再操作');
 }
 async function startReady(home) {
   await jobAction(home, 'runtime', 'start');
@@ -110,13 +108,6 @@ export function operations(home = stateHome()) {
       catch (error) { await stopReady(home).catch(() => {}); await atomicJson(statePath(home, 'personal'), before); if (!paused) await startReady(home); throw error; }
     },
     'choose-folder': async input => chooseFolder({ ...input, projectRoot: await currentProjectRoot(home) }),
-    'launch-qoder': async () => {
-      const projectRoot = await currentProjectRoot(home);
-      if (!projectRoot) throw new Error('请先设置项目目录');
-      const command = resolveQoderCommand();
-      if (!command) throw new Error('未找到 Qoder CLI，请先安装 Qoder CLI');
-      await launchQoderCli(command, projectRoot);
-    },
     logs: () => openLogs(home),
     diagnostics: async () => {
       const safe = async operation => operation().catch(error => ({ error: error.message }));
@@ -179,7 +170,6 @@ export function trayState(snapshot) {
   return { status: snapshot.status, iconStatus: snapshot.status, tooltip: `Personal DevSpace · ${snapshot.activity ?? (snapshot.paused ? '已暂停' : ready ? '运行中' : '需要检查')}`,
     menu: [item('state', ready ? 'Runtime 正常运行' : snapshot.paused ? '服务已暂停' : 'Runtime 未就绪', '', false),
       item('settings', '打开控制中心', 'open', true), item('toggle', ready ? '暂停服务' : '恢复服务', ready ? 'suspend' : 'resume'),
-      item('qoder', '启动 Qoder CLI', 'launch-qoder', true),
       item('restart', '重启 Runtime', 'restart'), item('updates', '检查官方稳定版', 'update-check'),
       item('logs', '打开日志', 'logs', true), item('exit', '停止服务并退出', 'exit')] };
 }

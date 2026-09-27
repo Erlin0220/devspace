@@ -11,6 +11,13 @@ native MCP bridge to the existing DevSpace subagent runtime, and bounded SDK eve
 storage. `personal/desktop` owns the local Control Center, native tray adapter and
 OS lifecycle. Upstream `config.ts` and `user-config.ts` remain unchanged.
 
+Personal web subagents are owned directly by the OS-managed Runtime and persisted
+in the existing SQLite local-agent store. There is no second long-run task graph.
+`run_agent` can start a normal turn or Qoder native Goal execution; on Windows,
+Qoder work is launched in a real visible `cmd.exe` window while DevSpace keeps only
+the provider session, execution state, grader evidence and supervisor review state.
+DevSpace does not PTY-host or parse the Qoder terminal UI.
+
 The only core seams are optional server authentication/tool/event-store hooks,
 a read-only running-process count, the identified `waitTimeMs` compatibility alias,
 and home-relative **registered skill** reads. Default upstream OAuth and CLI remain
@@ -143,7 +150,7 @@ result**.
 The OS installer is the authoritative full verification boundary; the queueing
 process validates the frozen candidate identity. It stages immutable application
 bytes and locked production dependencies while the old Runtime remains available,
-then force-stops the owned Runtime and agent daemon, including active shell
+then force-stops the owned Runtime and any compatible on-demand CLI agent daemon, including active shell
 commands or subagent turns, before replacing Runtime code. It checks the
 candidate's owner, version and overlay commit before committing. Installation never re-queries the
 network to decide whether an already reviewed candidate is still “latest”; a later

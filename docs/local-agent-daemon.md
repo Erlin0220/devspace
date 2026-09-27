@@ -1,8 +1,8 @@
-# Local agent daemon
+# CLI local agent daemon
 
-Local agent execution is owned by an on-demand `devspace-agentd` process, not
-by the MCP server and not by an individual CLI invocation. The daemon is an
-internal implementation detail: the normal workflow remains:
+Generic CLI agent execution is owned by an on-demand `devspace-agentd`
+process rather than by an individual short-lived CLI invocation. This preserves
+the CLI contract where a run can return an agent id while work continues:
 
 ```text
 devspace agents run/continue/show/ls
@@ -16,11 +16,17 @@ devspace agents run/continue/show/ls
           └── provider runtimes
 ```
 
-The CLI starts the daemon automatically when an agent command needs it. The
-MCP server can use the same local client when an MCP operation needs agent
-functionality, but `devspace serve` is not required for local-agent execution.
-The daemon is scoped to one DevSpace `stateDir`, so one SQLite store and one
-runtime owner serve all clients using that configuration.
+The CLI starts the daemon automatically when an agent command needs it;
+`devspace serve` is not required for CLI local-agent execution. The daemon is
+scoped to one DevSpace `stateDir`.
+
+Personal Web MCP deliberately does **not** use this daemon. Personal DevSpace is
+already an OS-owned long-lived Runtime, so it owns `LocalAgentManager` directly
+and registers `run_agent/get_agent/continue_agent/review_agent/list_agents`
+without a second socket, secret, PID lock, or daemon lifecycle. Its Qoder
+`mode=goal` execution launches a real Windows console and persists the native
+Qoder session, process evidence, grader results, attempts, and review state in
+the SQLite agent record.
 
 Communication uses a private Unix domain socket on Linux/macOS or a named pipe
 on Windows. The endpoint is not exposed through the public MCP HTTP port.
@@ -33,7 +39,7 @@ provider cancellation, provider availability, workspace conflicts, daemon
 timeouts, and similar recovery categories after a background turn completes.
 Internal provider causes are kept out of the daemon payload and persisted JSON.
 
-The implementation treats `better-result` as the application-failure boundary,
+The CLI daemon implementation treats `better-result` as the application-failure boundary,
 not as a replacement for every exception. Expected target, scope, provider,
 store, and daemon failures return typed Results. Sequential fallible setup uses
 `Result.gen` when it makes the success path clearer, small Result-to-Result

@@ -1,16 +1,12 @@
 import { chmodSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
-import { drizzle } from "drizzle-orm/better-sqlite3";
-import * as schema from "./schema.js";
 import { migrateDatabase } from "./migrations.js";
 
 export type SqliteDatabase = Database.Database;
-export type AppDatabase = ReturnType<typeof createDrizzleDatabase>;
 
 export interface DatabaseHandle {
   sqlite: SqliteDatabase;
-  db: AppDatabase;
   close(): void;
 }
 
@@ -32,11 +28,6 @@ export function openDatabase(stateDir: string): DatabaseHandle {
 
   return {
     sqlite,
-    db: createDrizzleDatabase(sqlite),
     close: () => sqlite.close(),
   };
-}
-
-function createDrizzleDatabase(sqlite: SqliteDatabase) {
-  return drizzle(sqlite, { schema });
 }

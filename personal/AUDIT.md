@@ -44,7 +44,7 @@ projection failures do not roll back a healthy core. Pause intent survives
 restart/install. Partial stop refuses activation; failed candidate readiness
 restores the previous runtime; rollback failure is reported explicitly. Installation
 requires verified application bytes, the tested Node version and private auth.
-An approved installation force-stops the owned Runtime and agent daemon; active
+An approved installation force-stops the owned Runtime; active
 shell commands and subagent turns do not block the switch. One
 `install-attempt.json` owns queue/progress/result state.
 
@@ -102,11 +102,9 @@ removing replay noise:
 - The unused core `openExternalUrl` implementation and its self-only test were
   deleted; Personal desktop already owns browser launching.
 
-Two large files remain intentionally unsplit. `src/personal/longrun.ts` is the
-durable task state machine, where persistence/recovery/worker/grader transitions
-share invariants. `personal/desktop/platform.mjs` is the explicit OS ownership
-boundary. Split either only when a real behavior change provides a stable seam,
-not to reduce line count.
+`personal/desktop/platform.mjs` remains the explicit OS ownership boundary.
+Durable subagent execution now lives in the existing SQLite-backed local agent
+store instead of a second Personal long-run state machine.
 
 The main upstream replay hotspot is still `src/server.ts`: optional Personal
 hooks, MCP replay/session retention, dynamic subagent resolution, the wait-time

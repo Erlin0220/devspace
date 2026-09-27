@@ -2,14 +2,12 @@
 
 DevSpace agent profiles are user-owned markdown files with YAML
 frontmatter. They describe roles such as reviewer, explorer, or implementer.
-The internal on-demand `devspace-agentd` process owns provider invocation. The
-CLI and MCP server use it as clients when they need agent execution.
-
-When subagents are enabled, the internal `devspace-agentd` process owns the
-durable agent manager and live provider runtimes. `devspace agents run` is a
-thin local client that starts or reuses the daemon automatically; `devspace
-serve` is not required. A run returns an agent id immediately, while the daemon
-persists its status, latest response, and provider session id.
+The generic CLI uses an on-demand `devspace-agentd` process so
+`devspace agents run` can return while the provider keeps working. Personal
+Web MCP does not add that private IPC hop: its OS-owned Runtime keeps
+`LocalAgentManager` in-process and exposes `run_agent/get_agent/continue_agent/
+review_agent` directly. Both paths persist logical agent identity and provider
+session ids in the same SQLite-backed `LocalAgentStore`.
 
 Profiles are discovered from:
 

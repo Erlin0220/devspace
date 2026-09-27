@@ -36,12 +36,11 @@ export function createDesktopController(operations, { intervalMs = 5000, noticeT
       try { await pending?.catch(() => {}); await operations.exit(); return { stopped: true }; }
       catch (error) { closing = false; activity = undefined; alert = error.message; publish(); throw error; }
     }
-    if (['diagnostics', 'logs', 'choose-folder', 'launch-qoder'].includes(action)) {
+    if (['diagnostics', 'logs', 'choose-folder'].includes(action)) {
       if (!operations[action]) throw new Error('不支持的操作');
       if (!utilities.has(action)) utilities.set(action, Promise.resolve().then(() => operations[action]({ ...input, signal: abort.signal }))
         .finally(() => utilities.delete(action)));
       const result = await utilities.get(action);
-      if (action === 'launch-qoder') { setNotice('Qoder CLI 已在当前项目目录启动'); publish(); }
       return result;
     }
     if (!Object.hasOwn(activityText, action) || !operations[action]) throw Object.assign(new Error('未知控制操作'), { status: 400 });

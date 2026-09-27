@@ -1,9 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { accessSync, constants } from "node:fs";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
+import { promisify } from "node:util";
+import { execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
 import {
   AgentProviderExecutionError,
   AgentProviderProtocolError,
@@ -23,6 +26,7 @@ import type {
 
 const require = createRequire(import.meta.url);
 const spawn = require("cross-spawn") as typeof import("node:child_process").spawn;
+const exec = promisify(execFile);
 
 const QODER_TURN_TIMEOUT_MS = 4 * 60 * 60_000;
 const QODER_STDOUT_TAIL_CHARS = 4 * 1024 * 1024;
@@ -61,10 +65,19 @@ export function qoderCliArgs(
   ];
 }
 
+export function qoderPrompt(
+  input: Pick<LocalAgentRunInput, "prompt" | "executionMode" | "goalTurns">,
+): string {
+  if (input.executionMode !== "goal") return input.prompt;
+  const objective = input.prompt.trim().replace(/\s+/g, " ");
+  return `/goal ${objective} --turns ${input.goalTurns ?? 200}`;
+}
+
 export class QoderCliRuntime implements LocalAgentRuntime {
   readonly provider = "qoder" as const;
   private closed = false;
   private activeChild?: ChildProcessWithoutNullStreams;
+  private activeProcessId?: number;
 
   constructor(
     private readonly command: string,
@@ -99,21 +112,24 @@ export class QoderCliRuntime implements LocalAgentRuntime {
         }
 
         const sessionId = input.providerSessionId ?? randomUUID();
-        const args = qoderCliArgs(input, sessionId, this.agentId);
+        const args = [...qoderCliArgs(input, sessionId, this.agentId), qoderPrompt(input)];
         await callbacks?.onSessionId?.(sessionId);
 
-        const child = spawn(this.command, [...args, input.prompt], {
-          cwd: resolve(input.workspaceRoot),
-          env: this.env,
-          stdio: ["pipe", "pipe", "pipe"],
-          detached: process.platform !== "win32",
-          windowsHide: true,
-        }) as ChildProcessWithoutNullStreams;
-        this.activeChild = child;
-        child.stdin.end();
-
         try {
-          const completed = await collectQoderTurn(child, QODER_TURN_TIMEOUT_MS);
+          const completed = process.platform === "win32" && this.env.DEVSPACE_QODER_VISIBLE_TERMINAL !== "0"
+            ? await runVisibleQoderTurn({
+              command: this.command,
+              args,
+              cwd: resolve(input.workspaceRoot),
+              env: this.env,
+              agentId: this.agentId,
+              timeoutMs: QODER_TURN_TIMEOUT_MS,
+              onProcessId: async (processId) => {
+                this.activeProcessId = processId;
+                await callbacks?.onProcessId?.(processId);
+              },
+            })
+            : await this.runHidden(args, input, callbacks);
           if (completed.exitCode !== 0) {
             throw new AgentProviderExecutionError({
               code: "PROVIDER_EXECUTION_ERROR",
@@ -147,17 +163,41 @@ export class QoderCliRuntime implements LocalAgentRuntime {
             provider: this.provider,
             providerSessionId: sessionId,
             finalResponse,
+            processId: completed.processId,
             items: [{
               type: "qoder_cli",
               sessionId,
               exitCode: completed.exitCode,
+              processId: completed.processId,
             }],
           };
         } finally {
-          if (this.activeChild === child) this.activeChild = undefined;
+          this.activeProcessId = undefined;
         }
       },
     });
+  }
+
+  private async runHidden(
+    args: string[],
+    input: LocalAgentRunInput,
+    callbacks?: LocalAgentRunCallbacks,
+  ): Promise<{ exitCode: number | null; stdout: string; stderr: string; processId?: number }> {
+    const child = spawn(this.command, args, {
+      cwd: resolve(input.workspaceRoot),
+      env: this.env,
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+      windowsHide: true,
+    }) as ChildProcessWithoutNullStreams;
+    this.activeChild = child;
+    if (child.pid) await callbacks?.onProcessId?.(child.pid);
+    child.stdin.end();
+    try {
+      return { ...(await collectQoderTurn(child, QODER_TURN_TIMEOUT_MS)), processId: child.pid };
+    } finally {
+      if (this.activeChild === child) this.activeChild = undefined;
+    }
   }
 
   async releaseSession(_providerSessionId: string): Promise<void> {
@@ -172,6 +212,10 @@ export class QoderCliRuntime implements LocalAgentRuntime {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    if (this.activeProcessId) {
+      await terminateWindowsProcessTree(this.activeProcessId).catch(() => {});
+      this.activeProcessId = undefined;
+    }
     const child = this.activeChild;
     this.activeChild = undefined;
     if (!child || child.exitCode !== null) return;
@@ -185,6 +229,7 @@ export class QoderCliRuntime implements LocalAgentRuntime {
 
 export class QoderCliLocalAgentDriver implements LocalAgentDriver {
   readonly provider = "qoder" as const;
+  readonly reuseRuntime = false;
   private commandResolved = false;
   private resolvedCommand?: string;
 
@@ -343,6 +388,206 @@ async function collectQoderTurn(
     child.once("error", onError);
     child.once("close", onClose);
   });
+}
+
+interface VisibleQoderRunOptions {
+  command: string;
+  args: string[];
+  cwd: string;
+  env: NodeJS.ProcessEnv;
+  agentId: string;
+  timeoutMs: number;
+  onProcessId(processId: number): Promise<void>;
+}
+
+async function runVisibleQoderTurn(
+  options: VisibleQoderRunOptions,
+): Promise<{ exitCode: number | null; stdout: string; stderr: string; processId: number }> {
+  const runDir = await mkdtemp(join(tmpdir(), "devspace-qoder-"));
+  const stdoutPath = join(runDir, "stdout.log");
+  const stderrPath = join(runDir, "stderr.log");
+  const resultPath = join(runDir, "result.json");
+  const configPath = join(runDir, "run.json");
+  const runnerPath = join(runDir, "runner.cjs");
+  const commandPath = join(runDir, "run.cmd");
+  await writeFile(configPath, JSON.stringify({
+    command: options.command,
+    args: options.args,
+    cwd: options.cwd,
+    stdoutPath,
+    stderrPath,
+    resultPath,
+  }, null, 2) + "\n", { mode: 0o600 });
+  await writeFile(runnerPath, qoderTerminalRunnerSource(), { mode: 0o600 });
+  await writeFile(commandPath, [
+    "@echo off",
+    `title DevSpace Qoder ${options.agentId}`,
+    "\"%DEVSPACE_QODER_NODE%\" \"%DEVSPACE_QODER_RUNNER%\" \"%DEVSPACE_QODER_CONFIG%\"",
+    "set \"_DEVSPACE_QODER_EXIT=%errorlevel%\"",
+    "del \"%~f0\" >nul 2>&1",
+    "exit /b %_DEVSPACE_QODER_EXIT%",
+    "",
+  ].join("\r\n"), { mode: 0o600 });
+
+  try {
+  const powershell = join(
+    options.env.SystemRoot ?? process.env.SystemRoot ?? "C:\\Windows",
+    "System32",
+    "WindowsPowerShell",
+    "v1.0",
+    "powershell.exe",
+  );
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "$arg = '/d /c \"' + $env:DEVSPACE_QODER_CMD + '\"'",
+    "$p = Start-Process -FilePath $env:DEVSPACE_QODER_COMSPEC -ArgumentList $arg -WorkingDirectory $env:DEVSPACE_QODER_CWD -WindowStyle Normal -PassThru",
+    "[Console]::Out.Write($p.Id)",
+  ].join("; ");
+  const launched = await exec(powershell, [
+    "-NoLogo",
+    "-NoProfile",
+    "-NonInteractive",
+    "-STA",
+    "-EncodedCommand",
+    Buffer.from(script, "utf16le").toString("base64"),
+  ], {
+    windowsHide: true,
+    timeout: 30_000,
+    maxBuffer: 64 * 1024,
+    env: {
+      ...options.env,
+      DEVSPACE_QODER_COMSPEC: options.env.ComSpec ?? process.env.ComSpec ?? "C:\\Windows\\System32\\cmd.exe",
+      DEVSPACE_QODER_CMD: commandPath,
+      DEVSPACE_QODER_CWD: options.cwd,
+      DEVSPACE_QODER_NODE: process.execPath,
+      DEVSPACE_QODER_RUNNER: runnerPath,
+      DEVSPACE_QODER_CONFIG: configPath,
+    },
+  });
+  const processId = Number(launched.stdout.trim());
+  if (!Number.isSafeInteger(processId) || processId <= 0) {
+    throw new AgentProviderUnavailableError({
+      code: "PROVIDER_UNAVAILABLE",
+      provider: "qoder",
+      agentId: options.agentId,
+      operation: "spawn_terminal",
+      retryable: true,
+      message: "Windows did not return a valid Qoder terminal process id.",
+    });
+  }
+  await options.onProcessId(processId);
+
+  const deadline = Date.now() + options.timeoutMs;
+  while (Date.now() < deadline) {
+    const result = await readQoderTerminalResult(resultPath);
+    if (result) {
+      return {
+        exitCode: result.exitCode,
+        stdout: await readFile(stdoutPath, "utf8").catch(() => ""),
+        stderr: [
+          await readFile(stderrPath, "utf8").catch(() => ""),
+          result.error ?? "",
+        ].filter(Boolean).join("\n").trim(),
+        processId,
+      };
+    }
+    if (!isProcessAlive(processId)) {
+      await sleep(300);
+      const afterExit = await readQoderTerminalResult(resultPath);
+      if (afterExit) continue;
+      return {
+        exitCode: null,
+        stdout: await readFile(stdoutPath, "utf8").catch(() => ""),
+        stderr: (await readFile(stderrPath, "utf8").catch(() => "")).trim()
+          || "The visible Qoder terminal was closed before it produced a result.",
+        processId,
+      };
+    }
+    await sleep(250);
+  }
+
+  await terminateWindowsProcessTree(processId).catch(() => {});
+  throw new AgentProviderExecutionError({
+    code: "PROVIDER_EXECUTION_ERROR",
+    provider: "qoder",
+    agentId: options.agentId,
+    operation: "run",
+    retryable: true,
+    message: "Qoder CLI turn exceeded the provider timeout.",
+  });
+  } finally {
+    await rm(runDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+function qoderTerminalRunnerSource(): string {
+  return [
+    '"use strict";',
+    'const { closeSync, openSync, readFileSync, renameSync, rmSync, writeFileSync, writeSync } = require("node:fs");',
+    'const { spawn } = require("node:child_process");',
+    'const configPath = process.argv[2];',
+    'if (!configPath) throw new Error("Missing Qoder terminal run configuration.");',
+    'const config = JSON.parse(readFileSync(configPath, "utf8"));',
+    'rmSync(configPath, { force: true });',
+    'const stdoutFd = openSync(config.stdoutPath, "a", 0o600);',
+    'const stderrFd = openSync(config.stderrPath, "a", 0o600);',
+    'let finished = false;',
+    'const child = spawn(config.command, config.args, {',
+    '  cwd: config.cwd,',
+    '  env: process.env,',
+    '  stdio: ["inherit", "pipe", "pipe"],',
+    '  windowsHide: false,',
+    '  shell: process.platform === "win32" && /\\.(?:cmd|bat)$/i.test(config.command),',
+    '});',
+    'child.stdout?.on("data", chunk => { process.stdout.write(chunk); writeSync(stdoutFd, chunk); });',
+    'child.stderr?.on("data", chunk => { process.stderr.write(chunk); writeSync(stderrFd, chunk); });',
+    'const finish = (exitCode, error) => {',
+    '  if (finished) return;',
+    '  finished = true;',
+    '  closeSync(stdoutFd);',
+    '  closeSync(stderrFd);',
+    '  const temporary = config.resultPath + ".tmp";',
+    '  writeFileSync(temporary, JSON.stringify({ schema: 1, exitCode, error, finishedAt: new Date().toISOString() }) + "\\n", { mode: 0o600 });',
+    '  renameSync(temporary, config.resultPath);',
+    '  process.exitCode = exitCode ?? 1;',
+    '};',
+    'child.once("error", error => finish(null, error.message));',
+    'child.once("close", code => finish(code));',
+    '',
+  ].join("\n");
+}
+
+async function readQoderTerminalResult(
+  resultPath: string,
+): Promise<{ exitCode: number | null; error?: string } | undefined> {
+  try {
+    const value = JSON.parse(await readFile(resultPath, "utf8")) as Record<string, unknown>;
+    return {
+      exitCode: typeof value.exitCode === "number" ? value.exitCode : null,
+      ...(typeof value.error === "string" && value.error ? { error: value.error } : {}),
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    if (error instanceof SyntaxError) return undefined;
+    throw error;
+  }
+}
+
+async function terminateWindowsProcessTree(processId: number): Promise<void> {
+  const taskkill = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe");
+  await exec(taskkill, ["/pid", String(processId), "/T", "/F"], {
+    windowsHide: true,
+    timeout: 10_000,
+  });
+}
+
+function isProcessAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 function executableExists(path: string): boolean {

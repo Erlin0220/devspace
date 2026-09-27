@@ -60,12 +60,6 @@ export async function collectGarbage(home = stateHome(), { dryRun = false, now =
     if (info && now - info.mtimeMs > LOG_RETENTION_MS) await remove('expired-log', path, { force: true });
   }
 
-  const queue = statePath(home, 'installQueue');
-  const queued = await readJson(queue, null).catch(() => null);
-  if (queued) {
-    const age = now - Date.parse(queued.createdAt ?? '');
-    if (Number.isFinite(age) && age >= 5 * 60_000) await remove('stale-install-queue', queue, { force: true });
-  }
   for (const name of ['install-request.json', 'install-result.json', 'control-endpoint.json']) {
     const path = join(home, name);
     if (await stat(path).then(() => true, error => error.code === 'ENOENT' ? false : Promise.reject(error))) {

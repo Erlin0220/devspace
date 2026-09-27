@@ -76,23 +76,6 @@ export async function openLogs(home) {
   if (process.platform === 'win32') await runWindowsDesktop('Start-Process explorer.exe -ArgumentList $env:PERSONAL_LOG_DIRECTORY', { env: { PERSONAL_LOG_DIRECTORY: directory } });
   else await native(process.platform === 'darwin' ? '/usr/bin/open' : 'xdg-open', [directory]);
 }
-export async function launchQoderCli(command, projectRoot) {
-  if (process.platform !== 'win32') throw new Error('启动 Qoder CLI 当前仅支持 Windows');
-  if (!isAbsolute(command) || /["\r\n\0]/.test(command)) throw new Error('Qoder CLI 路径无效');
-  if (!isAbsolute(projectRoot) || /["\r\n\0]/.test(projectRoot)) throw new Error('项目目录无效');
-  await access(command, fsConstants.F_OK);
-  await access(projectRoot, fsConstants.F_OK);
-  // Qoder owns its interactive terminal. Personal only opens a real console
-  // window in the selected workspace and leaves all TUI/input/state handling to
-  // qodercli itself.
-  await runWindowsDesktop(`
-$ErrorActionPreference='Stop'
-$cmd = if ($env:ComSpec) { $env:ComSpec } else { Join-Path $env:SystemRoot 'System32\\cmd.exe' }
-$arguments = '/d /k ""' + $env:PERSONAL_QODER_COMMAND + '""'
-Start-Process -FilePath $cmd -ArgumentList $arguments -WorkingDirectory $env:PERSONAL_QODER_ROOT -WindowStyle Normal
-`,
-    { env: { PERSONAL_QODER_COMMAND: command, PERSONAL_QODER_ROOT: resolve(projectRoot) } });
-}
 export async function chooseFolder({ projectRoot = '', signal } = {}) {
   if (process.platform === 'win32') {
     try { return (await runWindowsDesktop(`

@@ -44,6 +44,7 @@ const subagents: SubagentsConfig = {
     { id: "codex", enabled: true, model: "gpt-default", effort: "medium" },
     { id: "claude", enabled: true },
     { id: "agy", enabled: true, model: "gemini-3.7-flash-high", effort: "high" },
+    { id: "qoder", enabled: true, model: "Qwen3.8-Flash", effort: "high" },
   ],
 };
 let currentSubagents = subagents;
@@ -144,6 +145,55 @@ const agyDriver: LocalAgentDriver = {
   },
 };
 
+class FakeQoderRuntime implements LocalAgentRuntime {
+  readonly provider = "qoder" as const;
+  readonly inputs: LocalAgentRunInput[] = [];
+
+  async run(
+    input: LocalAgentRunInput,
+    callbacks?: {
+      onSessionId?: (id: string) => void | Promise<void>;
+      onProcessId?: (id: number) => void | Promise<void>;
+    },
+  ): Promise<BetterResult<LocalAgentRunResult, AgentProviderError>> {
+    this.inputs.push(input);
+    const sessionId = input.providerSessionId ?? "qoder_session_test";
+    await callbacks?.onSessionId?.(sessionId);
+    await callbacks?.onProcessId?.(4242);
+    return Result.ok({
+      provider: this.provider,
+      providerSessionId: sessionId,
+      finalResponse: "qoder goal complete",
+      items: [],
+      processId: 4242,
+    });
+  }
+
+  releaseSession(): Promise<void> {
+    return Promise.resolve();
+  }
+
+  isAlive(): boolean {
+    return true;
+  }
+
+  close(): Promise<void> {
+    return Promise.resolve();
+  }
+}
+
+const qoderRuntimes = new Map<string, FakeQoderRuntime>();
+const qoderDriver: LocalAgentDriver = {
+  provider: "qoder",
+  reuseRuntime: false,
+  runtimeKey: (context: LocalAgentRuntimeContext) => context.agentId,
+  createRuntime: async (context) => {
+    const runtime = new FakeQoderRuntime();
+    qoderRuntimes.set(context.agentId, runtime);
+    return Result.ok(runtime);
+  },
+};
+
 function providerFailure(message: string): AgentProviderExecutionError {
   return new AgentProviderExecutionError({
     code: "PROVIDER_EXECUTION_ERROR",
@@ -165,7 +215,7 @@ store.update(stale.id, { status: "running", latestResponse: "previous response" 
 
 const manager = new LocalAgentManager({
   store,
-  drivers: [driver, agyDriver],
+  drivers: [driver, agyDriver, qoderDriver],
   pool: new LocalAgentRuntimePool(),
   loadProfiles: async () => [profile, disabledProfile],
   allowedRoots: [root],
@@ -259,8 +309,8 @@ if (mismatchedGet.isErr()) assert.equal(mismatchedGet.error.code, "WORKSPACE_MIS
 unwrap(manager.reconcileActiveRuns());
 assert.equal(getRecord(stale.id).status, "error");
 assert.equal(getRecord(stale.id).latestResponse, "previous response");
-assert.equal(getRecord(stale.id).error, "DevSpace restarted while this agent turn was running.");
-assert.equal(getRecord(stale.id).errorCode, "DAEMON_UNAVAILABLE");
+assert.equal(getRecord(stale.id).error, "DevSpace restarted while this agent execution was running.");
+assert.equal(getRecord(stale.id).errorCode, "AGENT_EXECUTION_INTERRUPTED");
 assert.equal(getRecord(stale.id).errorRetryable, true);
 
 const first = unwrap(await manager.start({
@@ -303,6 +353,79 @@ const agyExplicitAllowed = unwrap(await manager.start({
 }));
 await waitFor(() => getRecord(agyExplicitAllowed.id).status === "idle");
 assert.equal(agyRuntimes.get(agyExplicitAllowed.id)?.inputs.at(-1)?.writeMode, "allowed");
+
+const goal = unwrap(await manager.start({
+  target: "qoder",
+  prompt: "finish the remaining work",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  executionMode: "goal",
+  goalTurns: 321,
+  requireReview: true,
+  maxAttempts: 3,
+}));
+await waitFor(() => getRecord(goal.id).status === "awaiting_review");
+const goalRecord = getRecord(goal.id);
+assert.equal(goalRecord.executionMode, "goal");
+assert.equal(goalRecord.goalTurns, 321);
+assert.equal(goalRecord.providerSessionId, "qoder_session_test");
+assert.equal(goalRecord.attempts, 1);
+assert.equal(goalRecord.maxAttempts, 3);
+assert.equal(goalRecord.processId, undefined);
+assert.equal(goalRecord.reviewStatus, "pending");
+assert.equal(qoderRuntimes.get(goal.id)?.inputs.at(-1)?.executionMode, "goal");
+const goalContinueWhileAwaitingReview = await manager.continue(
+  goal.id,
+  "bypass review",
+  {},
+  scope,
+);
+assert.equal(goalContinueWhileAwaitingReview.isErr(), true);
+if (goalContinueWhileAwaitingReview.isErr()) {
+  assert.equal(goalContinueWhileAwaitingReview.error.code, "AGENT_CONFLICT");
+  assert.match(goalContinueWhileAwaitingReview.error.message, /review_agent/);
+}
+
+const goalRetry = unwrap(await manager.review(
+  goal.id,
+  "retry",
+  "The supervisor needs one more verification pass.",
+  scope,
+));
+assert.equal(goalRetry.status, "running");
+await waitFor(() => getRecord(goal.id).status === "awaiting_review");
+assert.equal(getRecord(goal.id).attempts, 2);
+assert.equal(qoderRuntimes.get(goal.id)?.inputs.at(-1)?.providerSessionId, "qoder_session_test");
+assert.match(qoderRuntimes.get(goal.id)?.inputs.at(-1)?.prompt ?? "", /one more verification pass/);
+
+const goalApproved = unwrap(await manager.review(goal.id, "approve", "Evidence accepted.", scope));
+assert.equal(goalApproved.status, "idle");
+assert.equal(goalApproved.reviewStatus, "approved");
+
+const graderFailure = unwrap(await manager.start({
+  target: "qoder",
+  prompt: "produce a result that still fails the deterministic grader",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  executionMode: "goal",
+  requireReview: false,
+  graderCommands: [
+    `"${process.execPath}" -e "process.exit(1)"`,
+  ],
+}));
+await waitFor(() => getRecord(graderFailure.id).status === "awaiting_review");
+assert.equal(getRecord(graderFailure.id).graderResults?.at(0)?.exitCode, 1);
+const invalidApproval = await manager.review(
+  graderFailure.id,
+  "approve",
+  "ignore the failing grader",
+  scope,
+);
+assert.equal(invalidApproval.isErr(), true);
+if (invalidApproval.isErr()) {
+  assert.equal(invalidApproval.error.code, "AGENT_CONFLICT");
+  assert.match(invalidApproval.error.message, /deterministic grader is failing/);
+}
 
 currentSubagents = { ...subagents, enabled: false };
 const disabledAfterReload = await manager.start({

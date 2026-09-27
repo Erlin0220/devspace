@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { resolve } from "node:path";
 import { Result, type Result as BetterResult } from "better-result";
 import {
@@ -19,17 +20,20 @@ import {
 } from "./local-agent-targets.js";
 import {
   type LocalAgentRecord,
+  type LocalAgentGraderResult,
   type LocalAgentStore,
   type LocalAgentWorkspaceScope,
 } from "./local-agent-store.js";
 import {
   type LocalAgentDriver,
+  type LocalAgentExecutionMode,
   type LocalAgentRunCallbacks,
   type LocalAgentRunInput,
   type LocalAgentRuntimeContext,
   type LocalAgentWriteMode,
 } from "./local-agent-runtime.js";
 import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
+import { resolveShellCommand, terminateProcessTree } from "./process-platform.js";
 import { assertAllowedPath } from "./roots.js";
 import {
   isSubagentProviderEnabled,
@@ -44,6 +48,11 @@ export interface StartLocalAgentInput {
   model?: string;
   effort?: string;
   writeMode?: LocalAgentWriteMode;
+  executionMode?: LocalAgentExecutionMode;
+  goalTurns?: number;
+  requireReview?: boolean;
+  maxAttempts?: number;
+  graderCommands?: string[];
 }
 
 export interface RunOverrides {
@@ -51,6 +60,8 @@ export interface RunOverrides {
   effort?: string;
   writeMode?: LocalAgentWriteMode;
 }
+
+export type AgentReviewAction = "approve" | "retry" | "reject";
 
 export interface LocalAgentManagerLogger {
   (level: "info" | "warn" | "error", event: string, fields: Record<string, unknown>): void;
@@ -143,6 +154,17 @@ export class LocalAgentManager {
       }
       yield* manager.providerEnabledResult(target.provider, target.name, "start", subagents);
       yield* manager.driverResult(target.provider, "start");
+      const executionMode = input.executionMode ?? "turn";
+      if (executionMode === "goal" && target.provider !== "qoder") {
+        return Result.err(new AgentTargetError({
+          code: "PROVIDER_NOT_CONFIGURED",
+          target: target.name,
+          provider: target.provider,
+          operation: "start",
+          retryable: false,
+          message: "Goal execution is currently provided by Qoder's native Goal mode.",
+        }));
+      }
       const record = yield* manager.store.createResult({
         workspaceId: input.workspaceId,
         workspaceRoot,
@@ -150,6 +172,11 @@ export class LocalAgentManager {
         provider: target.provider,
         model: target.model,
         effort: target.effort,
+        executionMode,
+        goalTurns: input.goalTurns,
+        requireReview: input.requireReview,
+        maxAttempts: input.maxAttempts,
+        graderCommands: input.graderCommands,
       });
       return manager.begin(record, input.prompt, {
         model: target.model,
@@ -164,6 +191,7 @@ export class LocalAgentManager {
     prompt: string,
     overrides: RunOverrides = {},
     scope: LocalAgentWorkspaceScope,
+    allowReviewRetry = false,
   ): Promise<BetterResult<LocalAgentRecord, AgentContinueError>> {
     const manager = this;
     return Result.gen(async function* () {
@@ -171,6 +199,24 @@ export class LocalAgentManager {
       const record = yield* manager.store.getByIdResult(agentId);
       if (!record) return Result.err(agentNotFound(agentId));
       yield* manager.agentWorkspaceResult(record, scope, "continue");
+      if (record.status === "starting" || record.status === "running") {
+        return Result.err(new AgentConflictError({
+          code: "AGENT_CONFLICT",
+          agentId,
+          operation: "continue",
+          retryable: true,
+          message: `Agent ${agentId} already has a running execution.`,
+        }));
+      }
+      if (record.status === "awaiting_review" && !allowReviewRetry) {
+        return Result.err(new AgentConflictError({
+          code: "AGENT_CONFLICT",
+          agentId,
+          operation: "continue",
+          retryable: false,
+          message: `Agent ${agentId} is awaiting supervisor review; use review_agent.`,
+        }));
+      }
       const profiles = yield* Result.await(manager.loadProfilesResult(record.workspaceRoot, record.profileName));
       yield* manager.profileForRecordResult(record, profiles);
       yield* manager.providerEnabledResult(
@@ -204,6 +250,78 @@ export class LocalAgentManager {
         workspaceRoot,
       })
     ));
+  }
+
+  async review(
+    agentId: string,
+    action: AgentReviewAction,
+    note: string | undefined,
+    scope: LocalAgentWorkspaceScope,
+  ): Promise<BetterResult<LocalAgentRecord, AgentContinueError>> {
+    const lookup = this.get(agentId, scope);
+    if (lookup.isErr()) return lookup;
+    const record = lookup.value;
+    if (record.status !== "awaiting_review") {
+      return Result.err(new AgentConflictError({
+        code: "AGENT_CONFLICT",
+        agentId,
+        operation: "review",
+        retryable: false,
+        message: `Agent ${agentId} is not awaiting supervisor review.`,
+      }));
+    }
+
+    if (action === "approve") {
+      const failedGrader = (record.graderResults ?? []).find(
+        (grader) => grader.timedOut || grader.exitCode !== 0,
+      );
+      if (failedGrader) {
+        return Result.err(new AgentConflictError({
+          code: "AGENT_CONFLICT",
+          agentId,
+          operation: "review_approve",
+          retryable: false,
+          message: `Agent ${agentId} cannot be approved while a deterministic grader is failing: ${failedGrader.command}`,
+        }));
+      }
+      return this.store.updateResult(agentId, {
+        status: "idle",
+        reviewStatus: "approved",
+        reviewNote: note,
+      });
+    }
+    if (action === "reject") {
+      return this.store.updateResult(agentId, {
+        status: "error",
+        reviewStatus: "rejected",
+        reviewNote: note,
+        error: note?.trim() || "Supervisor rejected the agent result.",
+        errorCode: "AGENT_REVIEW_REJECTED",
+        errorRetryable: false,
+      });
+    }
+
+    if ((record.attempts ?? 0) >= (record.maxAttempts ?? 5)) {
+      return Result.err(new AgentConflictError({
+        code: "AGENT_CONFLICT",
+        agentId,
+        operation: "review_retry",
+        retryable: false,
+        message: `Agent ${agentId} reached its retry limit.`,
+      }));
+    }
+    const evidence = [
+      note?.trim(),
+      ...(record.graderResults ?? [])
+        .filter((grader) => grader.timedOut || grader.exitCode !== 0)
+        .map((grader) => `Grader failed: ${grader.command}\n${grader.output}`),
+    ].filter((value): value is string => Boolean(value));
+    const prompt = [
+      "Continue the same task and fix the remaining acceptance failures.",
+      "Do not weaken or remove acceptance criteria.",
+      ...evidence,
+    ].join("\n\n");
+    return this.continue(agentId, prompt, {}, scope, true);
   }
 
   async close(): Promise<void> {
@@ -257,6 +375,11 @@ export class LocalAgentManager {
       status: "running",
       model: overrides.model ?? record.model,
       effort: overrides.effort ?? record.effort,
+      attempts: (record.attempts ?? 0) + 1,
+      reviewStatus: record.requireReview ? "pending" : (record.reviewStatus ?? "not_required"),
+      reviewNote: undefined,
+      graderResults: [],
+      processId: undefined,
       latestResponse: undefined,
       error: undefined,
       errorCode: undefined,
@@ -333,6 +456,10 @@ export class LocalAgentManager {
           const updated = this.store.updateResult(record.id, { providerSessionId });
           if (updated.isErr()) throw updated.error;
         },
+        onProcessId: (processId) => {
+          const updated = this.store.updateResult(record.id, { processId });
+          if (updated.isErr()) throw updated.error;
+        },
       };
       const result = await this.pool.run(driver.value, context, input.value, callbacks);
       if (result.isErr()) {
@@ -343,9 +470,20 @@ export class LocalAgentManager {
       const current = this.store.getByIdResult(record.id);
       if (current.isErr()) throw current.error;
       if (!current.value) return;
+      const graderResults = await this.runGraders(
+        workspaceRoot,
+        current.value.graderCommands ?? [],
+      );
+      const gradersPassed = graderResults.every(
+        (grader) => grader.exitCode === 0 && !grader.timedOut,
+      );
+      const needsReview = Boolean(current.value.requireReview) || !gradersPassed;
       const updated = this.store.updateResult(record.id, {
         providerSessionId: runResult.providerSessionId ?? current.value.providerSessionId,
-        status: "idle",
+        processId: undefined,
+        status: needsReview ? "awaiting_review" : "idle",
+        reviewStatus: needsReview ? "pending" : "not_required",
+        graderResults,
         latestResponse: runResult.finalResponse,
         error: undefined,
         errorCode: undefined,
@@ -384,6 +522,65 @@ export class LocalAgentManager {
     }
   }
 
+  private async runGraders(
+    workspaceRoot: string,
+    commands: readonly string[],
+  ): Promise<LocalAgentGraderResult[]> {
+    const results: LocalAgentGraderResult[] = [];
+    for (const command of commands) {
+      const result = await this.runGrader(workspaceRoot, command);
+      results.push(result);
+      if (result.timedOut || result.exitCode !== 0) break;
+    }
+    return results;
+  }
+
+  private async runGrader(
+    workspaceRoot: string,
+    command: string,
+  ): Promise<LocalAgentGraderResult> {
+    const shell = resolveShellCommand(command);
+    const detached = process.platform !== "win32";
+    const child = spawn(shell.executable, shell.args, {
+      cwd: workspaceRoot,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      detached,
+    });
+    let output = "";
+    const append = (chunk: Buffer) => {
+      output = appendBoundedOutput(output, chunk.toString("utf8"), 12_000);
+    };
+    child.stdout?.on("data", append);
+    child.stderr?.on("data", append);
+    return new Promise((resolveResult) => {
+      let settled = false;
+      const finish = (result: LocalAgentGraderResult) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolveResult(result);
+      };
+      child.once("error", (error) => finish({
+        command,
+        timedOut: false,
+        output: appendBoundedOutput(output, error.message, 12_000),
+      }));
+      child.once("close", (code) => finish({
+        command,
+        exitCode: code ?? undefined,
+        timedOut: false,
+        output: output.trim(),
+      }));
+      const timer = setTimeout(() => {
+        terminateProcessTree(child, "SIGTERM", detached);
+        finish({ command, timedOut: true, output: output.trim() });
+      }, 60 * 60_000);
+      timer.unref();
+    });
+  }
+
   private persistRunError(
     record: LocalAgentRecord,
     error: LocalAgentError,
@@ -391,6 +588,7 @@ export class LocalAgentManager {
   ): void {
     const persisted = this.store.updateResult(record.id, {
       status: "error",
+      processId: undefined,
       error: error.message,
       errorCode: error.code,
       errorRetryable: error.retryable,
@@ -429,6 +627,8 @@ export class LocalAgentManager {
       prompt: fullPrompt,
       workspaceRoot: record.workspaceRoot,
       providerSessionId: record.providerSessionId,
+      executionMode: record.executionMode ?? "turn",
+      goalTurns: record.goalTurns,
       writeMode: overrides.writeMode ?? (record.provider === "agy" ? "full_access" : "allowed"),
       model: record.model ?? profile?.model,
       effort: record.effort ?? profile?.effort,
@@ -598,6 +798,13 @@ export function createLocalAgentManager(options: LocalAgentManagerOptions): Loca
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function appendBoundedOutput(current: string, next: string, maximum: number): string {
+  const combined = current + next;
+  if (combined.length <= maximum) return combined;
+  const half = Math.max(1, Math.floor((maximum - 32) / 2));
+  return `${combined.slice(0, half)}\n... output truncated ...\n${combined.slice(-half)}`;
 }
 
 function safeCauseType(cause: unknown): string | undefined {
