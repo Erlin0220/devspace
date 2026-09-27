@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
-import { access, lstat, readFile, writeFile, mkdir } from 'node:fs/promises';
+import { access, lstat, readFile, writeFile, mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { VERIFICATION_STAGES } from './verification.mjs';
@@ -61,6 +62,22 @@ export async function cleanRevision(root) {
   return (await exec('git', ['rev-parse', 'HEAD'], options)).stdout.trim();
 }
 
+export async function sourceRevision(root) {
+  const options = { cwd: root, windowsHide: true, timeout: 30_000 };
+  const candidateHead = (await exec('git', ['rev-parse', 'HEAD'], options)).stdout.trim();
+  const scratch = await mkdtemp(join(tmpdir(), 'personal-candidate-index-'));
+  const env = { ...process.env, GIT_INDEX_FILE: join(scratch, 'index') };
+  try {
+    await exec('git', ['read-tree', 'HEAD'], { ...options, env });
+    await exec('git', ['add', '-A', '--', '.'], { ...options, env });
+    await exec('git', ['reset', '-q', 'HEAD', '--', '.personal-review'], { ...options, env });
+    const sourceTree = (await exec('git', ['write-tree'], { ...options, env })).stdout.trim();
+    return { candidateHead, sourceTree };
+  } finally {
+    await rm(scratch, { recursive: true, force: true });
+  }
+}
+
 async function upstreamIdentity(root) {
   const value = JSON.parse(await readFile(join(root, 'personal', 'upstream.json'), 'utf8'));
   if (typeof value?.version !== 'string' || !/^v?\d+\.\d+\.\d+$/.test(value.tag ?? '')
@@ -68,19 +85,29 @@ async function upstreamIdentity(root) {
   return { version: value.version, tag: value.tag, commit: value.commit };
 }
 
-export async function recordCandidate(root, stages, expectedCommit, extra = {}) {
+export async function recordCandidate(root, stages, expectedRevision, extra = {}) {
   if (requiredStages.some(name => !stages.some(stage => stage.name === name && stage.exitCode === 0))) {
     throw new Error('Required verification stages have not passed');
   }
-  const candidateHead = await cleanRevision(root);
-  if (!/^[a-f0-9]{40}$/.test(expectedCommit ?? '') || candidateHead !== expectedCommit) {
-    throw new Error('Repository changed during verification; rerun against one frozen commit');
+  if (typeof expectedRevision === 'string') {
+    try {
+      if (await cleanRevision(root) !== expectedRevision) throw new Error();
+    } catch {
+      throw new Error('Repository changed during verification; rerun against one frozen source tree');
+    }
+  }
+  const expected = typeof expectedRevision === 'string' ? { candidateHead: expectedRevision } : expectedRevision;
+  const current = await sourceRevision(root);
+  if (!/^[a-f0-9]{40}$/.test(expected?.candidateHead ?? '') || current.candidateHead !== expected.candidateHead
+      || (expected?.sourceTree && current.sourceTree !== expected.sourceTree)) {
+    throw new Error('Repository changed during verification; rerun against one frozen source tree');
   }
   const payload = await payloadDigest(root);
   const manifest = {
     schema: 1,
     owner: 'personal-devspace',
-    candidateHead,
+    candidateHead: current.candidateHead,
+    sourceTree: current.sourceTree,
     upstream: await upstreamIdentity(root),
     platform: process.platform,
     arch: process.arch,
@@ -97,9 +124,12 @@ export async function recordCandidate(root, stages, expectedCommit, extra = {}) 
 
 export async function inspectCandidate(root) {
   const manifest = JSON.parse(await readFile(join(root, '.personal-review', 'candidate.json'), 'utf8'));
+  const current = await sourceRevision(root);
   if (manifest?.schema !== 1 || manifest.platform !== process.platform || manifest.arch !== process.arch
-      || manifest.node !== process.version || manifest.candidateHead !== await cleanRevision(root)) {
-    throw new Error('Candidate revision/platform/Node version differs from its verification manifest');
+      || manifest.node !== process.version || !/^[a-f0-9]{40}$/.test(manifest.sourceTree ?? '')
+      || !/^[a-f0-9]{64}$/.test(manifest.payload?.sha256 ?? '') || !Number.isSafeInteger(manifest.payload?.bytes)
+      || manifest.candidateHead !== current.candidateHead || manifest.sourceTree !== current.sourceTree) {
+    throw new Error('Candidate source/platform/Node version differs from its verification manifest');
   }
   const baseline = await upstreamIdentity(root);
   if (baseline.version !== manifest.upstream?.version || baseline.tag !== manifest.upstream?.tag || baseline.commit !== manifest.upstream?.commit) {

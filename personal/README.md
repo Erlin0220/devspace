@@ -117,14 +117,19 @@ source/lock/build script requires rebuilding. Windows source builds need Rust
 it does not bundle a browser framework.
 
 During development, run the smallest affected checks instead of repeating the
-entire release suite. After making and committing changes, use the deterministic
-release-check action once to run the full verification pass and generate a fresh
-tested candidate manifest:
+entire release suite. A local install does not require a Git commit. The install
+command reuses a still-valid candidate manifest; when the source tree changed or
+the manifest is missing, it materializes the current Git-tree snapshot (including
+uncommitted non-ignored changes) in a disposable worktree, runs the full
+deterministic verification pass there, promotes only verified build/native outputs
+and logs, and refreshes the candidate before queueing the install:
 
 ```text
-npm run personal:release-check
 node personal/bin.mjs install C:\project\DevSpace
 ```
+
+Run `npm run personal:release-check` separately only when an explicit release
+receipt is needed without installing.
 
 Use `npm run personal:replay` separately when changing the recorded upstream
 baseline, the replay/rebase path, or when an explicit replayability rehearsal is
@@ -132,8 +137,9 @@ needed. Use `npm run personal:live` when native desktop behavior, process
 ownership/lifecycle, installer/shortcut behavior or another actual-platform
 native contract changed.
 
-The install command verifies the exact committed revision and payload hash, then
-hands off to an independent OS installer **and waits for its terminal result**.
+The install command verifies the exact HEAD, working-tree fingerprint and payload
+hash, then hands off to an independent OS installer **and waits for its terminal
+result**.
 The OS installer is the authoritative full verification boundary; the queueing
 process validates the frozen candidate identity. It stages immutable application
 bytes and locked production dependencies while the old Runtime remains available,

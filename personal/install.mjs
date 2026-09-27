@@ -88,20 +88,24 @@ async function stopOwn(home) {
     errorMessage: 'Personal process owners stopped but the Runtime health endpoint is still responding',
   });
 }
-async function ready(home, version, commit) {
+async function ready(home, version, commit, payloadSha256) {
   await waitForRuntime(home, snapshot => (
     snapshot.owned && snapshot.runtimeVersion === version && snapshot.overlayCommit === commit
+      && snapshot.payloadSha256 === payloadSha256
   ), {
     attempts: 80,
     intervalMs: 250,
     errorMessage: 'Candidate did not become healthy within the readiness window',
   });
 }
-export async function installPersonal(source, home = stateHome(), { requestId, expectedCandidateHead } = {}) {
+export async function installPersonal(source, home = stateHome(), { requestId, expectedCandidateHead, expectedPayloadSha256 } = {}) {
   await secureStateDirectory(home);
   const { manifest, payload } = await verifyCandidate(source);
   if (expectedCandidateHead && manifest.candidateHead !== expectedCandidateHead) {
     throw new Error('Candidate revision changed after the installation request was approved');
+  }
+  if (expectedPayloadSha256 && manifest.payload.sha256 !== expectedPayloadSha256) {
+    throw new Error('Candidate payload changed after the installation request was approved');
   }
   const stable = manifest.upstream;
   const previous = await readJson(statePath(home, 'install'), null);
@@ -125,7 +129,7 @@ export async function installPersonal(source, home = stateHome(), { requestId, e
     },
     select: () => registerJobs(home, destination, undefined, { record: false }),
     start: () => jobAction(home, 'runtime', 'start'),
-    ready: () => ready(home, stable.version, manifest.candidateHead),
+    ready: () => ready(home, stable.version, manifest.candidateHead, manifest.payload.sha256),
     commit: () => atomicJson(statePath(home, 'install'), { schema: 1, owner: 'personal-devspace', packageRoot: destination }),
     restore: async () => {
       await stopOwn(home);
@@ -152,16 +156,19 @@ export async function installPersonal(source, home = stateHome(), { requestId, e
   }
   if (!previous) await legacyTasksAction(home, 'disable').catch(error => { result.warning = `${result.warning ?? ''} Legacy logon tasks need cleanup: ${error.message}`.trim(); });
   if (requestId) await report(home, requestId, { status: 'installed', version: stable.version, packageRoot: destination,
-    candidateHead: manifest.candidateHead, previous: previous?.packageRoot, ...result });
+    candidateHead: manifest.candidateHead, payloadSha256: manifest.payload.sha256, previous: previous?.packageRoot, ...result });
   return result;
 }
 
 // The OS starts this outside the invoking MCP process tree. It may safely replace
 // the Runtime/desktop without killing itself or unrelated Team/Tunnel processes.
-export async function requestInstall(source, home = stateHome(), { expectedCandidateHead } = {}) {
+export async function requestInstall(source, home = stateHome(), { expectedCandidateHead, expectedPayloadSha256 } = {}) {
   const manifest = await inspectCandidate(source);
   if (expectedCandidateHead && manifest.candidateHead !== expectedCandidateHead) {
     throw new Error('Candidate revision changed after review; prepare and approve it again');
+  }
+  if (expectedPayloadSha256 && manifest.payload.sha256 !== expectedPayloadSha256) {
+    throw new Error('Candidate payload changed after review; prepare and approve it again');
   }
   await secureStateDirectory(home);
   const requestId = randomUUID();
@@ -199,6 +206,7 @@ export async function requestInstall(source, home = stateHome(), { expectedCandi
       source: sourcePath,
       home,
       candidateHead: manifest.candidateHead,
+      payloadSha256: manifest.payload.sha256,
       status: 'queued',
       queuedAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -209,7 +217,7 @@ export async function requestInstall(source, home = stateHome(), { expectedCandi
     // implementation. Candidate code is data until verifyCandidate() succeeds.
     await registerJobs(home, installerRoot, ['installer'], { record: false });
     await jobAction(home, 'installer', 'start');
-    return { accepted: true, requestId, status: 'queued', candidateHead: manifest.candidateHead };
+    return { accepted: true, requestId, status: 'queued', candidateHead: manifest.candidateHead, payloadSha256: manifest.payload.sha256 };
   } catch (error) {
     await report(home, requestId, { status: 'failed', error: error.message });
     if (!await installerRunning(home).catch(() => true)) await jobAction(home, 'installer', 'remove').catch(() => {});
@@ -221,8 +229,10 @@ export async function requestInstall(source, home = stateHome(), { expectedCandi
 export async function runInstaller(home = stateHome()) {
   const request = await readJson(attemptPath(home));
   if (request?.schema !== 1 || typeof request.requestId !== 'string' || request.home !== home || !isAbsolute(request.source)
+      || !/^[a-f0-9]{40}$/.test(request.candidateHead ?? '') || !/^[a-f0-9]{64}$/.test(request.payloadSha256 ?? '')
       || request.status !== 'queued') throw new Error('Invalid installation attempt');
-  try { return await installPersonal(request.source, home, { requestId: request.requestId, expectedCandidateHead: request.candidateHead }); }
+  try { return await installPersonal(request.source, home, { requestId: request.requestId, expectedCandidateHead: request.candidateHead,
+    expectedPayloadSha256: request.payloadSha256 }); }
   catch (error) { await report(home, request.requestId, { status: 'failed', error: error.message }); throw error; }
 }
 
@@ -231,7 +241,7 @@ async function reconcileStoppedAttempt(home, attempt) {
   const installed = installation?.packageRoot
     ? await readJson(join(installation.packageRoot, '.personal-install.json'), null).catch(() => null)
     : null;
-  const value = installed?.candidateHead === attempt.candidateHead
+  const value = installed?.candidateHead === attempt.candidateHead && installed?.payload?.sha256 === attempt.payloadSha256
     ? { ...attempt, status: 'installed', packageRoot: installation.packageRoot, reconciled: true,
       updatedAt: new Date().toISOString() }
     : { ...attempt, status: 'failed', error: 'Installer exited without committing the requested candidate',
@@ -265,7 +275,7 @@ export async function waitForInstall(home, requestId, { timeoutMs = 35 * 60_000,
   throw new Error('Timed out waiting for installation to finish');
 }
 
-export async function requestInstallAndWait(source, home = stateHome(), { expectedCandidateHead, ...waitOptions } = {}) {
-  const queued = await requestInstall(source, home, { expectedCandidateHead });
+export async function requestInstallAndWait(source, home = stateHome(), { expectedCandidateHead, expectedPayloadSha256, ...waitOptions } = {}) {
+  const queued = await requestInstall(source, home, { expectedCandidateHead, expectedPayloadSha256 });
   return waitForInstall(home, queued.requestId, waitOptions);
 }

@@ -21,7 +21,9 @@ async function candidateStatus(home) {
   if (!review?.candidate || !review.candidateHead) return review;
   const manifest = await readJson(join(review.candidate, '.personal-review', 'candidate.json'), null).catch(() => null);
   const attempt = await readJson(statePath(home, 'installAttempt'), null).catch(() => null);
-  const applied = attempt?.status === 'installed' && attempt.candidateHead === review.candidateHead;
+  const expectedPayload = review.candidatePayloadSha256 ?? manifest?.payload?.sha256;
+  const applied = attempt?.status === 'installed' && attempt.candidateHead === review.candidateHead
+    && (!expectedPayload || attempt.payloadSha256 === expectedPayload);
   return { ...review,
     status: applied ? 'applied' : review.status,
     version: manifest?.upstream?.version,
@@ -126,6 +128,7 @@ export function operations(home = stateHome()) {
       const personal = await readPersonalConfig(home);
       const result = await prepareStable({ root: personal.sourceRoot ?? packageRoot, onProgress });
       const review = { schema: 1, status: 'tested-awaiting-review', candidate: result.candidate, candidateHead: result.candidateHead,
+        candidatePayloadSha256: result.candidatePayloadSha256,
         preparedAt: new Date().toISOString() };
       await atomicJson(statePath(home, 'upgradeReview'), review);
       return { ...review, version: result.version, branch: result.branch, tests: result.tests };
@@ -133,12 +136,15 @@ export function operations(home = stateHome()) {
     'update-apply': async () => {
       await requireIdle(home);
       const candidate = await readJson(statePath(home, 'upgradeReview'));
-      if (candidate?.status !== 'tested-awaiting-review' || !candidate.candidate) throw new Error('没有经过完整验证的升级候选');
-      const approved = { ...candidate, approvedCandidateHead: candidate.candidateHead, approvedAt: new Date().toISOString() };
+      if (candidate?.status !== 'tested-awaiting-review' || !candidate.candidate || !candidate.candidatePayloadSha256) {
+        throw new Error('没有经过完整验证的升级候选，请重新准备');
+      }
+      const approved = { ...candidate, approvedCandidateHead: candidate.candidateHead,
+        approvedPayloadSha256: candidate.candidatePayloadSha256, approvedAt: new Date().toISOString() };
       await atomicJson(statePath(home, 'upgradeReview'), approved);
       try {
         const result = await (await import('../install.mjs')).requestInstallAndWait(candidate.candidate, home,
-          { expectedCandidateHead: candidate.candidateHead });
+          { expectedCandidateHead: candidate.candidateHead, expectedPayloadSha256: candidate.candidatePayloadSha256 });
         await atomicJson(statePath(home, 'upgradeReview'), { ...approved, status: 'applied', appliedAt: new Date().toISOString(),
           requestId: result.requestId });
         return result;

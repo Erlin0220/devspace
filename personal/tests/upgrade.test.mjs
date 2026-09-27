@@ -1,13 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { access, readFile, mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { cleanRevision, payloadFiles, recordCandidate, verifyCandidate } from '../artifact.mjs';
+import { payloadFiles, recordCandidate, sourceRevision, verifyCandidate } from '../artifact.mjs';
 import { assertLinearOverlay, selectStable, stableVersion, discoverStable } from '../upgrade.mjs';
 import { runNpmCommand, VERIFICATION_STAGES } from '../verification.mjs';
+import { materializeVerificationWorktree } from '../verify.mjs';
 const exec = promisify(execFile);
 const release = (version, extra = {}) => ({ tag_name: `v${version}`, draft: false, prerelease: false, published_at: '2026-09-01', body: 'notes', ...extra });
 const registry = version => ({ 'dist-tags': { latest: version, beta: '99.0.0-beta.9' }, versions: { '1.0.7': {}, [version]: {}, '99.0.0-beta.9': {} } });
@@ -39,6 +40,7 @@ test('release check performs one full verification pass and keeps stable replay 
   const pkg = JSON.parse(await readFile(new URL('../../package.json', import.meta.url), 'utf8'));
   assert.equal(pkg.scripts['personal:release-check'], 'npm run personal:verify');
   assert.equal(pkg.scripts['personal:replay'], 'node personal/upgrade.mjs replay');
+  assert.equal(VERIFICATION_STAGES[0].args[0], 'ci');
 });
 
 test('release verification keeps the Personal overlay linear without running replay', async t => {
@@ -63,16 +65,38 @@ test('release verification keeps the Personal overlay linear without running rep
   await assert.rejects(assertLinearOverlay(root), /not linear/);
 });
 
-test('artifact receipt rejects a commit changed while verification was running', async t => {
+test('artifact receipt rejects a source tree changed while verification was running', async t => {
   const root = await mkdtemp(join(tmpdir(), 'personal-frozen-revision-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const exec = promisify(execFile);
   const git = args => exec('git', ['-c', 'user.name=Personal Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: root, windowsHide: true });
-  await git(['init', '--quiet']); await git(['commit', '--allow-empty', '-m', 'before']);
-  const before = await cleanRevision(root);
-  await git(['commit', '--allow-empty', '-m', 'changed-during-tests']);
+  await git(['init', '--quiet']); await writeFile(join(root, 'source.txt'), 'before\n'); await git(['add', '.']); await git(['commit', '-m', 'before']);
+  const before = await sourceRevision(root);
+  await writeFile(join(root, 'source.txt'), 'changed-during-tests\n');
   const stages = VERIFICATION_STAGES.map(({ name }) => ({ name, exitCode: 0 }));
   await assert.rejects(recordCandidate(root, stages, before), /changed during verification/);
+});
+
+test('verification worktree materializes the frozen dirty source without review state', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'personal-verification-worktree-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const git = args => exec('git', ['-c', 'user.name=Personal Fixture', '-c', 'user.email=fixture@example.invalid',
+    '-c', 'commit.gpgsign=false', ...args], { cwd: root, windowsHide: true });
+  await git(['init', '--quiet']);
+  await writeFile(join(root, '.gitignore'), '.personal-review/\n');
+  await writeFile(join(root, 'tracked.txt'), 'base\n');
+  await git(['add', '.']); await git(['commit', '-m', 'base']);
+  await writeFile(join(root, 'tracked.txt'), 'dirty\n');
+  await writeFile(join(root, 'untracked.txt'), 'new\n');
+  await mkdir(join(root, '.personal-review'), { recursive: true });
+  await writeFile(join(root, '.personal-review/candidate.json'), '{}\n');
+  const revision = await sourceRevision(root);
+  const isolated = await materializeVerificationWorktree(root, revision);
+  t.after(() => isolated.cleanup());
+  assert.equal((await readFile(join(isolated.root, 'tracked.txt'), 'utf8')).replaceAll('\r\n', '\n'), 'dirty\n');
+  assert.equal((await readFile(join(isolated.root, 'untracked.txt'), 'utf8')).replaceAll('\r\n', '\n'), 'new\n');
+  await assert.rejects(access(join(isolated.root, '.personal-review/candidate.json')));
+  await isolated.cleanup();
 });
 
 test('candidate manifest uses npm package contents plus the lockfile as one payload fact', async t => {
@@ -86,10 +110,12 @@ test('candidate manifest uses npm package contents plus the lockfile as one payl
   await writeFile(join(root, 'dist/server.js'), 'export default true;\n');
   const git = args => promisify(execFile)('git', ['-c', 'user.name=Personal Fixture', '-c', 'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', ...args], { cwd: root, windowsHide: true });
   await git(['init', '--quiet']); await git(['add', '.']); await git(['commit', '-m', 'candidate']);
-  const head = await cleanRevision(root);
+  await writeFile(join(root, 'personal/runtime.mjs'), 'export default "dirty but verified";\n');
+  const revision = await sourceRevision(root);
   const stages = VERIFICATION_STAGES.map(({ name }) => ({ name, exitCode: 0, durationMs: 1, log: '.personal-review/' + name + '.log' }));
-  const manifest = await recordCandidate(root, stages, head);
-  assert.equal(manifest.candidateHead, head); assert.equal(manifest.upstream.commit, 'a'.repeat(40));
+  const manifest = await recordCandidate(root, stages, revision);
+  assert.equal(manifest.candidateHead, revision.candidateHead); assert.equal(manifest.sourceTree, revision.sourceTree);
+  assert.equal(manifest.upstream.commit, 'a'.repeat(40));
   const files = await payloadFiles(root);
   assert.ok(files.includes('package-lock.json')); assert.ok(files.includes('dist/server.js')); assert.ok(files.includes('personal/runtime.mjs'));
   assert.equal((await verifyCandidate(root)).manifest.payload.sha256, manifest.payload.sha256);

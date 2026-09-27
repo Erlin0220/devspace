@@ -4,7 +4,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import semver from 'semver';
-import { recordCandidate } from './artifact.mjs';
+import { recordCandidate, sourceRevision } from './artifact.mjs';
 import { runVerification } from './verification.mjs';
 
 const exec = promisify(execFile);
@@ -84,12 +84,14 @@ export async function prepareStable({ root = repositoryRoot, onProgress = () => 
     await writeFile(join(candidate, 'personal', 'upstream.json'), `${JSON.stringify({ ...baseline, version: release.version, tag: release.tag, commit }, null, 2)}\n`);
     await git(candidate, ['add', 'personal/upstream.json']);
     if (await git(candidate, ['diff', '--cached', '--name-only'])) await git(candidate, ['commit', '-m', `chore: record official stable ${release.version} baseline`]);
-    const candidateHead = await git(candidate, ['rev-parse', 'HEAD']);
+    const expectedRevision = await sourceRevision(candidate);
+    const candidateHead = expectedRevision.candidateHead;
     const tests = await runVerification(candidate, onProgress);
-    const manifest = await recordCandidate(candidate, tests, candidateHead, { branch });
+    const manifest = await recordCandidate(candidate, tests, expectedRevision, { branch });
     const rangeDiff = await git(root, ['range-diff', `${baseline.commit}..${head}`, `${commit}..${candidateHead}`]);
     const modifyingDelta = await git(candidate, ['diff', '--stat', '--diff-filter=M', commit, 'HEAD']);
-    const result = { schema: 1, status: 'tested-awaiting-review', candidate, candidateHead, branch,
+    const result = { schema: 1, status: 'tested-awaiting-review', candidate, candidateHead,
+      candidatePayloadSha256: manifest.payload.sha256, branch,
       version: manifest.upstream.version, commit: manifest.upstream.commit, tests: manifest.stages,
       note: 'Review range-diff, removed/absorbed patches and behavior regressions before installing. No running version was changed.' };
     await mkdir(join(candidate, '.personal-review'), { recursive: true });

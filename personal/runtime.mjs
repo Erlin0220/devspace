@@ -43,6 +43,7 @@ async function runtimeHealthSnapshot(home, config, timeoutMs = 2_000) {
     running: owned,
     runningProcesses: owned ? health.runningProcesses ?? 0 : 0,
     overlayCommit: owned ? health.overlayCommit : undefined,
+    payloadSha256: owned ? health.payloadSha256 : undefined,
     runtimeVersion: owned ? health.version : undefined,
   };
 }
@@ -111,7 +112,8 @@ export async function startRuntime(home = stateHome()) {
     resolveSubagentsConfig,
   });
   running.app.get('/personal-healthz', (_request, response) => response.json({ name: 'personal-devspace', owner: ownerId(home), version: baseline.version,
-    overlayCommit: installed?.candidateHead ?? installed?.commit ?? 'development', runningProcesses: running.runningProcessCount() }));
+    overlayCommit: installed?.candidateHead ?? installed?.commit ?? 'development',
+    payloadSha256: installed?.payload?.sha256, runningProcesses: running.runningProcessCount() }));
   let http;
   try {
     http = await new Promise((resolve, reject) => {

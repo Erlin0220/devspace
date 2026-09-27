@@ -33,9 +33,13 @@ the smallest affected typecheck, test, build or runtime check that proves the
 changed contract; small local changes do not require the full upstream suite,
 all Personal tests, native build, live acceptance or stable replay.
 
-For an installable current-checkout candidate, make the final revision clean and
-run `npm run personal:release-check` once. That command owns the full deterministic
-verification pass and fresh candidate manifest. Run `npm run personal:live` when
+For a current-checkout install, a Git commit is not required. The install command
+reuses a still-valid candidate. When the source tree changed, it verifies a frozen
+Git-tree snapshot in a disposable worktree so the running checkout's dependencies
+are never rewritten, then promotes only verified build/native outputs and installs
+that exact payload.
+Use `npm run personal:release-check` when an explicit release candidate receipt is
+needed. Run `npm run personal:live` when
 the change touches native desktop behavior, process ownership/lifecycle,
 installer/shortcuts, or another behavior that requires actual-platform native
 acceptance. Run `npm run personal:replay` when the upstream baseline changes,
