@@ -156,7 +156,17 @@ export class LocalAgentManager {
       }
       yield* manager.providerEnabledResult(target.provider, target.name, "start", subagents);
       yield* manager.driverResult(target.provider, "start");
-      const executionMode = input.executionMode ?? "turn";
+      const executionMode = input.executionMode ?? (target.provider === "qoder" ? "goal" : "turn");
+      if (target.provider === "qoder" && executionMode !== "goal") {
+        return Result.err(new AgentTargetError({
+          code: "PROVIDER_NOT_CONFIGURED",
+          target: target.name,
+          provider: target.provider,
+          operation: "start",
+          retryable: false,
+          message: "Qoder uses only its native visible Goal TUI; mode=turn is not available.",
+        }));
+      }
       if (executionMode === "goal" && target.provider !== "qoder") {
         return Result.err(new AgentTargetError({
           code: "PROVIDER_NOT_CONFIGURED",

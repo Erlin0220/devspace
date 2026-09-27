@@ -13,14 +13,16 @@ OS lifecycle. Upstream `config.ts` and `user-config.ts` remain unchanged.
 
 Personal web subagents are owned directly by the OS-managed Runtime and persisted
 in the existing SQLite local-agent store. There is no second long-run task graph.
-`run_agent` can start a normal turn or Qoder native Goal execution; on Windows,
-Qoder Goal work is launched as the native interactive `qodercli -i` TUI in a
-real visible PowerShell 7 (`pwsh`) console, with `pwsh` launching `qodercli`
-directly rather than through `cmd.exe` or Windows PowerShell 5.1. Qoder model
-turns explicitly pin `--context-window 1000000`; model and reasoning effort stay
-owned by the provider configuration. DevSpace does not PTY-host, mirror or parse
-that UI; it keeps only the provider session/execution/review state and reads
-progress through Qoder's public `/goal status` command.
+`run_agent` uses one Qoder execution path on Windows: native Goal mode in the
+interactive `qodercli -i` TUI. Qoder defaults to Goal mode and rejects `turn`,
+so no hidden Qoder worker exists beside the visible terminal. The OS-managed
+Runtime asks PowerShell 7 (`pwsh`) to create a real visible PowerShell 7 console,
+and that console invokes `qodercli` directly; `cmd.exe` and Windows PowerShell
+5.1 are not in the launch path. Qoder model turns explicitly pin
+`--context-window 1000000`; model and reasoning effort stay owned by provider
+configuration. DevSpace waits until Qoder lists the new session before persisting
+it or polling `/goal status`, avoiding resume probes against a not-yet-created
+session. DevSpace does not PTY-host, mirror or parse the TUI.
 
 The only core seams are optional server authentication/tool/event-store hooks,
 a read-only running-process count, the identified `waitTimeMs` compatibility alias,

@@ -235,7 +235,8 @@ definitions.
 
 Personal Web MCP uses its already-long-lived Personal Runtime instead of
 starting `devspace-agentd`. Its `run_agent` tool persists the same logical
-agent/session identity directly and `mode=goal` uses Qoder's native Goal mode.
+agent/session identity directly. On Windows Qoder always uses its visible native
+Goal TUI: omitted mode defaults to `goal`, while explicit `mode=turn` is rejected.
 
 For a Coding Agent, run the installation command printed by
 `devspace init`:

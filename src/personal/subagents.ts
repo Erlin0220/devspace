@@ -83,7 +83,7 @@ export class PersonalSubagents {
       {
         title: "Run DevSpace subagent",
         description:
-          "Start a durable DevSpace subagent execution in the current workspace using an advertised profile or enabled provider. Use mode=goal for Qoder native Goal work. The execution runs independently; inspect it with get_agent, use review_agent for supervisor decisions, and continue_agent for ordinary follow-up turns.",
+          "Start a durable DevSpace subagent execution in the current workspace using an advertised profile or enabled provider. Qoder always uses its native visible Goal TUI on Windows and defaults to mode=goal; mode=turn is unavailable for Qoder. The execution runs independently; inspect it with get_agent, use review_agent for supervisor decisions, and continue_agent for ordinary follow-up turns.",
         inputSchema: {
           workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
           target: z.string().min(1).describe(
@@ -93,7 +93,7 @@ export class PersonalSubagents {
             "Self-contained task brief. Include the objective, relevant constraints/context, and expected result. For command-recovery delegation, describe the legitimate high-level objective instead of copying or disguising a rejected command, and do not include credentials.",
           ),
           mode: z.enum(["turn", "goal"]).optional().describe(
-            "Use goal for a durable Qoder native Goal execution. Defaults to a normal bounded turn.",
+            "Qoder defaults to its native visible goal mode and rejects turn mode; other providers default to a normal bounded turn.",
           ),
           goalTurns: z.number().int().min(1).max(5_000).optional(),
           graderCommands: z.array(z.string().min(1).max(8_000)).max(20).optional(),

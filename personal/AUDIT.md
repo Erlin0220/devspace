@@ -133,3 +133,18 @@ GC reads all retention-owner records before deleting anything and preserves
 existing read errors instead of converting them to absent state. Regressions
 cover these failure paths, dry-run equivalence, actual command execution and
 grader process shutdown; no replacement state machine or dependency was added.
+
+## Qoder native Goal launch follow-up - 2026-09-27
+
+Qoder now has one Windows execution path: a visible native Goal TUI. Hidden
+`mode=turn` execution was removed; omitted mode defaults to Goal for Qoder and an
+explicit Qoder turn is rejected. The background Runtime uses PowerShell 7 only
+as the launcher and creates a separate visible PowerShell 7 console whose direct
+child is `qodercli`; the previous detached `stdio: ignore` launch is gone.
+
+The provider-generated session id is no longer persisted as though it were
+already durable. After the visible TUI starts, DevSpace waits on Qoder's public
+`--list-sessions` output for that exact session id, persists it only then, and
+only afterwards begins `/goal status` resume polling. This removes the startup
+race that produced transient `Invalid session identifier`/exit 42 probes before
+Qoder had created the session.

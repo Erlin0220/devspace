@@ -355,6 +355,30 @@ const agyExplicitAllowed = unwrap(await manager.start({
 await waitFor(() => getRecord(agyExplicitAllowed.id).status === "idle");
 assert.equal(agyRuntimes.get(agyExplicitAllowed.id)?.inputs.at(-1)?.writeMode, "allowed");
 
+const qoderDefault = unwrap(await manager.start({
+  target: "qoder",
+  prompt: "default qoder execution mode",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  requireReview: false,
+}));
+await waitFor(() => getRecord(qoderDefault.id).status === "idle");
+assert.equal(getRecord(qoderDefault.id).executionMode, "goal");
+assert.equal(qoderRuntimes.get(qoderDefault.id)?.inputs.at(-1)?.executionMode, "goal");
+
+const rejectedQoderTurn = await manager.start({
+  target: "qoder",
+  prompt: "hidden qoder turn must not exist",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  executionMode: "turn",
+});
+assert.equal(rejectedQoderTurn.isErr(), true);
+if (rejectedQoderTurn.isErr()) {
+  assert.equal(rejectedQoderTurn.error.code, "PROVIDER_NOT_CONFIGURED");
+  assert.match(rejectedQoderTurn.error.message, /native visible Goal TUI/);
+}
+
 const goal = unwrap(await manager.start({
   target: "qoder",
   prompt: "finish the remaining work",

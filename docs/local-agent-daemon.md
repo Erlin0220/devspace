@@ -23,10 +23,12 @@ scoped to one DevSpace `stateDir`.
 Personal Web MCP deliberately does **not** use this daemon. Personal DevSpace is
 already an OS-owned long-lived Runtime, so it owns `LocalAgentManager` directly
 and registers `run_agent/get_agent/continue_agent/review_agent/list_agents`
-without a second socket, secret, PID lock, or daemon lifecycle. Its Qoder
-`mode=goal` execution launches a real Windows console and persists the native
-Qoder session, process evidence, grader results, attempts, and review state in
-the SQLite agent record.
+without a second socket, secret, PID lock, or daemon lifecycle. On Windows its
+Qoder provider has one execution path: native Goal mode in a visible PowerShell
+7 console. Omitted Qoder mode defaults to `goal`; explicit Qoder `turn` mode is
+rejected. DevSpace persists the native Qoder session only after Qoder reports it
+through `--list-sessions`, plus process evidence, grader results, attempts, and
+review state in the SQLite agent record.
 
 Communication uses a private Unix domain socket on Linux/macOS or a named pipe
 on Windows. The endpoint is not exposed through the public MCP HTTP port.

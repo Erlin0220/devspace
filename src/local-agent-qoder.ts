@@ -1,19 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { accessSync, constants } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
-import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
-import { execFile, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFile } from "node:child_process";
 import {
   AgentProviderExecutionError,
   AgentProviderProtocolError,
   AgentProviderUnavailableError,
   captureAgentProviderResult,
 } from "./local-agent-errors.js";
-import { terminateProcessTree } from "./process-platform.js";
 import type {
   LocalAgentDriver,
   LocalAgentRunCallbacks,
@@ -24,39 +22,19 @@ import type {
   LocalAgentWriteMode,
 } from "./local-agent-runtime.js";
 
-const require = createRequire(import.meta.url);
-const spawn = require("cross-spawn") as typeof import("node:child_process").spawn;
 const exec = promisify(execFile);
 
 const QODER_TURN_TIMEOUT_MS = 4 * 60 * 60_000;
-const QODER_STDOUT_TAIL_CHARS = 4 * 1024 * 1024;
-const QODER_STDERR_TAIL_CHARS = 64 * 1024;
 const QODER_GOAL_STATUS_POLL_MS = 5_000;
+const QODER_SESSION_READY_POLL_MS = 250;
 const QODER_GOAL_START_GRACE_MS = 20_000;
 const QODER_CONTEXT_WINDOW = "1000000";
 const LEGACY_REMOTE_SESSION = /^qs_[A-Za-z0-9]+$/;
 
-export function qoderCliArgs(
-  input: Pick<
-    LocalAgentRunInput,
-    "providerSessionId" | "writeMode" | "model" | "effort"
-  >,
-  sessionId: string,
-  agentId: string,
-): string[] {
-  return [
-    "-p",
-    "--output-format",
-    "text",
-    ...qoderSessionArgs(input.providerSessionId, sessionId, agentId),
-    ...qoderAuthorityArgs({ ...input, agentId }),
-  ];
-}
-
 export function qoderInteractiveGoalArgs(
   input: Pick<
     LocalAgentRunInput,
-    "providerSessionId" | "writeMode" | "model" | "effort" | "prompt" | "executionMode" | "goalTurns"
+    "providerSessionId" | "writeMode" | "model" | "effort" | "prompt" | "goalTurns"
   >,
   sessionId: string,
   agentId: string,
@@ -91,9 +69,8 @@ function qoderSessionArgs(
 }
 
 export function qoderPrompt(
-  input: Pick<LocalAgentRunInput, "prompt" | "executionMode" | "goalTurns">,
+  input: Pick<LocalAgentRunInput, "prompt" | "goalTurns">,
 ): string {
-  if (input.executionMode !== "goal") return input.prompt;
   const objective = input.prompt.trim().replace(/\s+/g, " ");
   return `/goal ${objective} --turns ${input.goalTurns ?? 200}`;
 }
@@ -101,7 +78,6 @@ export function qoderPrompt(
 export class QoderCliRuntime implements LocalAgentRuntime {
   readonly provider = "qoder" as const;
   private closed = false;
-  private activeChild?: ChildProcessWithoutNullStreams;
   private activeProcessId?: number;
 
   constructor(
@@ -125,45 +101,55 @@ export class QoderCliRuntime implements LocalAgentRuntime {
             message: "Qoder CLI runtime is closed.",
           });
         }
-        if (this.activeChild) {
+        if (this.activeProcessId) {
           throw new AgentProviderProtocolError({
             code: "PROVIDER_PROTOCOL_ERROR",
             provider: this.provider,
             agentId: this.agentId,
             operation: "run",
             retryable: false,
-            message: "Qoder CLI runtime already has an active turn.",
+            message: "Qoder CLI runtime already has an active Goal.",
+          });
+        }
+        if (input.executionMode !== "goal") {
+          throw new AgentProviderProtocolError({
+            code: "PROVIDER_PROTOCOL_ERROR",
+            provider: this.provider,
+            agentId: this.agentId,
+            operation: "run",
+            retryable: false,
+            message: "Qoder execution uses only the native visible Goal TUI; start it with mode=goal.",
+          });
+        }
+        if (process.platform !== "win32") {
+          throw new AgentProviderUnavailableError({
+            code: "PROVIDER_UNAVAILABLE",
+            provider: this.provider,
+            agentId: this.agentId,
+            operation: "run",
+            retryable: false,
+            message: "The native visible Qoder Goal TUI is currently supported only on Windows.",
           });
         }
 
         const sessionId = input.providerSessionId ?? randomUUID();
-        await callbacks?.onSessionId?.(sessionId);
 
         try {
-          const interactiveGoal =
-            input.executionMode === "goal" &&
-            process.platform === "win32" &&
-            this.env.DEVSPACE_QODER_VISIBLE_TERMINAL !== "0";
-          const completed = interactiveGoal
-            ? await runInteractiveQoderGoal({
-              command: this.command,
-              args: qoderInteractiveGoalArgs(input, sessionId, this.agentId),
-              cwd: resolve(input.workspaceRoot),
-              env: this.env,
-              agentId: this.agentId,
-              sessionId,
-              timeoutMs: QODER_TURN_TIMEOUT_MS,
-              onProcessId: async (processId) => {
-                this.activeProcessId = processId;
-                await callbacks?.onProcessId?.(processId);
-              },
-              onProgress: callbacks?.onProgress,
-            })
-            : await this.runHidden(
-              [...qoderCliArgs(input, sessionId, this.agentId), qoderPrompt(input)],
-              input,
-              callbacks,
-            );
+          const completed = await runInteractiveQoderGoal({
+            command: this.command,
+            args: qoderInteractiveGoalArgs(input, sessionId, this.agentId),
+            cwd: resolve(input.workspaceRoot),
+            env: this.env,
+            agentId: this.agentId,
+            sessionId,
+            timeoutMs: QODER_TURN_TIMEOUT_MS,
+            onSessionReady: async () => callbacks?.onSessionId?.(sessionId),
+            onProcessId: async (processId) => {
+              this.activeProcessId = processId;
+              await callbacks?.onProcessId?.(processId);
+            },
+            onProgress: callbacks?.onProgress,
+          });
           if (completed.exitCode !== 0) {
             throw new AgentProviderExecutionError({
               code: "PROVIDER_EXECUTION_ERROR",
@@ -199,7 +185,7 @@ export class QoderCliRuntime implements LocalAgentRuntime {
             finalResponse,
             processId: completed.processId,
             items: [{
-              type: interactiveGoal ? "qoder_cli_tui_goal" : "qoder_cli",
+              type: "qoder_cli_tui_goal",
               sessionId,
               exitCode: completed.exitCode,
               processId: completed.processId,
@@ -210,28 +196,6 @@ export class QoderCliRuntime implements LocalAgentRuntime {
         }
       },
     });
-  }
-
-  private async runHidden(
-    args: string[],
-    input: LocalAgentRunInput,
-    callbacks?: LocalAgentRunCallbacks,
-  ): Promise<{ exitCode: number | null; stdout: string; stderr: string; processId?: number }> {
-    const child = spawn(this.command, args, {
-      cwd: resolve(input.workspaceRoot),
-      env: this.env,
-      stdio: ["pipe", "pipe", "pipe"],
-      detached: process.platform !== "win32",
-      windowsHide: true,
-    }) as ChildProcessWithoutNullStreams;
-    this.activeChild = child;
-    if (child.pid) await callbacks?.onProcessId?.(child.pid);
-    child.stdin.end();
-    try {
-      return { ...(await collectQoderTurn(child, QODER_TURN_TIMEOUT_MS)), processId: child.pid };
-    } finally {
-      if (this.activeChild === child) this.activeChild = undefined;
-    }
   }
 
   async releaseSession(_providerSessionId: string): Promise<void> {
@@ -249,14 +213,6 @@ export class QoderCliRuntime implements LocalAgentRuntime {
     if (this.activeProcessId) {
       await terminateWindowsProcessTree(this.activeProcessId).catch(() => {});
       this.activeProcessId = undefined;
-    }
-    const child = this.activeChild;
-    this.activeChild = undefined;
-    if (!child || child.exitCode !== null) return;
-    const detached = process.platform !== "win32";
-    terminateProcessTree(child, "SIGTERM", detached);
-    if (!await waitForChildExit(child, 1_000)) {
-      terminateProcessTree(child, "SIGKILL", detached);
     }
   }
 }
@@ -369,63 +325,6 @@ function qoderAuthorityArgs(input: {
   return args;
 }
 
-async function collectQoderTurn(
-  child: ChildProcessWithoutNullStreams,
-  timeoutMs: number,
-): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
-  let stdout = "";
-  let stderr = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  child.stdout.on("data", (chunk: string) => {
-    stdout = appendTail(stdout, chunk, QODER_STDOUT_TAIL_CHARS);
-  });
-  child.stderr.on("data", (chunk: string) => {
-    stderr = appendTail(stderr, chunk, QODER_STDERR_TAIL_CHARS);
-  });
-
-  return new Promise((resolveTurn, rejectTurn) => {
-    let settled = false;
-    let timer: NodeJS.Timeout;
-    const finish = (operation: () => void) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      child.removeListener("error", onError);
-      child.removeListener("close", onClose);
-      operation();
-    };
-    const onError = (cause: Error) => finish(() => {
-      rejectTurn(new AgentProviderUnavailableError({
-        code: "PROVIDER_UNAVAILABLE",
-        provider: "qoder",
-        operation: "spawn",
-        retryable: true,
-        cause,
-        message: "Unable to start Qoder CLI.",
-      }));
-    });
-    const onClose = (code: number | null) => finish(() => {
-      resolveTurn({ exitCode: code, stdout, stderr: stderr.trim() });
-    });
-    timer = setTimeout(() => finish(() => {
-      const detached = process.platform !== "win32";
-      terminateProcessTree(child, "SIGTERM", detached);
-      rejectTurn(new AgentProviderExecutionError({
-        code: "PROVIDER_EXECUTION_ERROR",
-        provider: "qoder",
-        operation: "run",
-        retryable: true,
-        cause: { stderr: stderr.trim() || undefined },
-        message: "Qoder CLI turn exceeded the provider timeout.",
-      }));
-    }), timeoutMs);
-    timer.unref();
-    child.once("error", onError);
-    child.once("close", onClose);
-  });
-}
-
 interface InteractiveQoderGoalOptions {
   command: string;
   args: string[];
@@ -434,6 +333,7 @@ interface InteractiveQoderGoalOptions {
   agentId: string;
   sessionId: string;
   timeoutMs: number;
+  onSessionReady(): Promise<void> | void;
   onProcessId(processId: number): Promise<void>;
   onProgress?: (message: string) => void | Promise<void>;
 }
@@ -476,6 +376,8 @@ async function runInteractiveQoderGoal(
     await options.onProcessId(processId);
     const deadline = Date.now() + options.timeoutMs;
     const startupDeadline = Date.now() + QODER_GOAL_START_GRACE_MS;
+    await waitForQoderSession(options, processId, startupDeadline);
+    await options.onSessionReady();
     let sawGoal = false;
 
     while (Date.now() < deadline) {
@@ -553,27 +455,33 @@ async function launchInteractiveQoderTerminal(
       message: "PowerShell 7 (pwsh) is required for the visible Qoder terminal.",
     });
   }
-  const child = spawn(powershell, [
-    "-NoLogo",
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    options.scriptPath,
-  ], {
-    cwd: options.cwd,
-    windowsHide: false,
-    detached: true,
-    stdio: "ignore",
-    env: {
-      ...options.env,
-      DEVSPACE_QODER_CONFIG: options.configPath,
-    },
-  });
-  await new Promise<void>((resolveSpawn, rejectSpawn) => {
-    child.once("spawn", resolveSpawn);
-    child.once("error", rejectSpawn);
-  }).catch((cause) => {
+  const launcher = [
+    "$ErrorActionPreference='Stop'",
+    "$childArgs = '-NoLogo -NoProfile -ExecutionPolicy Bypass -File \"' + $env:DEVSPACE_QODER_SCRIPT + '\"'",
+    "$p = Start-Process -FilePath $env:DEVSPACE_QODER_PWSH -ArgumentList $childArgs -WorkingDirectory $env:DEVSPACE_QODER_CWD -WindowStyle Normal -PassThru",
+    "[Console]::Out.Write($p.Id)",
+  ].join("; ");
+  let launched: Awaited<ReturnType<typeof exec>>;
+  try {
+    launched = await exec(powershell, [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(launcher, "utf16le").toString("base64"),
+    ], {
+      windowsHide: true,
+      timeout: 30_000,
+      maxBuffer: 64 * 1024,
+      env: {
+        ...options.env,
+        DEVSPACE_QODER_PWSH: powershell,
+        DEVSPACE_QODER_CWD: options.cwd,
+        DEVSPACE_QODER_SCRIPT: options.scriptPath,
+        DEVSPACE_QODER_CONFIG: options.configPath,
+      },
+    });
+  } catch (cause) {
     throw new AgentProviderUnavailableError({
       code: "PROVIDER_UNAVAILABLE",
       provider: "qoder",
@@ -583,10 +491,9 @@ async function launchInteractiveQoderTerminal(
       cause,
       message: "Unable to start the visible Qoder PowerShell 7 terminal.",
     });
-  });
-  child.unref();
-  const processId = child.pid;
-  if (typeof processId === "number" && Number.isSafeInteger(processId) && processId > 0) return processId;
+  }
+  const processId = Number(String(launched.stdout).trim());
+  if (Number.isSafeInteger(processId) && processId > 0) return processId;
   throw new AgentProviderUnavailableError({
     code: "PROVIDER_UNAVAILABLE",
     provider: "qoder",
@@ -595,6 +502,61 @@ async function launchInteractiveQoderTerminal(
     retryable: true,
     message: "Windows did not return a valid Qoder terminal process id.",
   });
+}
+
+async function waitForQoderSession(
+  options: Pick<InteractiveQoderGoalOptions, "command" | "cwd" | "env" | "sessionId" | "agentId">,
+  processId: number,
+  deadline: number,
+): Promise<void> {
+  while (Date.now() < deadline) {
+    const remainingMs = Math.max(1, deadline - Date.now());
+    if (await qoderSessionExists(options, Math.min(10_000, remainingMs))) return;
+    if (!isProcessAlive(processId)) {
+      throw new AgentProviderExecutionError({
+        code: "PROVIDER_EXECUTION_ERROR",
+        provider: "qoder",
+        agentId: options.agentId,
+        operation: "create_session",
+        retryable: true,
+        message: "The interactive Qoder terminal closed before creating its session.",
+      });
+    }
+    await sleep(QODER_SESSION_READY_POLL_MS);
+  }
+  throw new AgentProviderProtocolError({
+    code: "PROVIDER_PROTOCOL_ERROR",
+    provider: "qoder",
+    agentId: options.agentId,
+    operation: "create_session",
+    retryable: true,
+    message: "Qoder started, but its session did not become available before the startup deadline.",
+  });
+}
+
+async function qoderSessionExists(
+  options: Pick<InteractiveQoderGoalOptions, "command" | "cwd" | "env" | "sessionId">,
+  timeoutMs: number,
+): Promise<boolean> {
+  try {
+    const result = await exec(options.command, ["--list-sessions"], {
+      cwd: options.cwd,
+      env: options.env,
+      windowsHide: true,
+      timeout: timeoutMs,
+      maxBuffer: 512 * 1024,
+    });
+    return qoderSessionListContains(
+      [result.stdout, result.stderr].filter(Boolean).join("\n"),
+      options.sessionId,
+    );
+  } catch {
+    return false;
+  }
+}
+
+export function qoderSessionListContains(output: string, sessionId: string): boolean {
+  return output.includes(`[${sessionId}]`);
 }
 
 export function resolvePowerShell7Command(env: NodeJS.ProcessEnv = process.env): string | undefined {
@@ -663,25 +625,4 @@ function executableExists(path: string): boolean {
   } catch {
     return false;
   }
-}
-
-function appendTail(current: string, chunk: string, maxCharacters: number): string {
-  const next = current + chunk;
-  return next.length <= maxCharacters ? next : next.slice(next.length - maxCharacters);
-}
-
-async function waitForChildExit(child: ChildProcessWithoutNullStreams, timeoutMs: number): Promise<boolean> {
-  if (child.exitCode !== null) return true;
-  return new Promise((resolveExit) => {
-    const timer = setTimeout(() => {
-      child.removeListener("exit", onExit);
-      resolveExit(false);
-    }, timeoutMs);
-    timer.unref();
-    const onExit = () => {
-      clearTimeout(timer);
-      resolveExit(true);
-    };
-    child.once("exit", onExit);
-  });
 }
