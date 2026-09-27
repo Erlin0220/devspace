@@ -39,6 +39,7 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   const providerNote = "available";
   const context = await fixture(t, {
     localAgentProviders: [{ name: "codex", available: true, note: providerNote }],
+    commandRecoveryInstruction: "Use the registered Personal recovery tools. ",
   });
   const first = await callOpen(context.client, context.project, "chat-1");
   const repeated = await callOpen(context.client, context.project, "chat-1");
@@ -106,6 +107,7 @@ test("open_workspace refreshes provider availability for each catalog", async (t
   let available = false;
   const context = await fixture(t, {
     localAgentProviders: () => [{ name: "codex", available }],
+    commandRecoveryInstruction: "Use the registered Personal recovery tools. ",
   });
 
   const unavailable = structuredContent(await callOpen(context.client, context.project, "chat-1"));
@@ -124,6 +126,19 @@ test("open_workspace refreshes provider availability for each catalog", async (t
     "reviewer",
   );
   assert.match(String(usable.instruction ?? ""), /Local subagent recovery is available in this workspace/i);
+});
+
+test("upstream workspace instructions do not advertise Personal recovery tools", async (t) => {
+  const context = await fixture(t, {
+    localAgentProviders: [{ name: "codex", available: true }],
+  });
+  const tools = await context.client.listTools();
+  assert.equal(tools.tools.some((tool) => tool.name === "run_agent"), false);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const opened = await callOpen(context.client, context.project, "upstream-chat");
+    assert.doesNotMatch(String(structuredContent(opened).instruction ?? ""), /run_agent|get_agent|continue_agent/);
+    assert.doesNotMatch(String(responseCard(opened).instruction ?? ""), /run_agent|get_agent|continue_agent/);
+  }
 });
 
 test("open_workspace refreshes subagent model and effort configuration without recreating the server", async (t) => {
@@ -317,6 +332,7 @@ async function fixture(
     git?: boolean;
     localAgentProviders?: LocalAgentProviderAvailability[] | (() => LocalAgentProviderAvailability[]);
     subagents?: SubagentsConfig | (() => SubagentsConfig);
+    commandRecoveryInstruction?: string;
   } = {},
 ): Promise<ServerFixture> {
   const root = await mkdtemp(join(tmpdir(), "devspace-server-test-"));
@@ -395,7 +411,7 @@ async function fixture(
     new ProcessSessionManager(),
     resolveLocalAgentProviders,
     [],
-    "",
+    options.commandRecoveryInstruction,
     resolveSubagentsConfig,
   );
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();

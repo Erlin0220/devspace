@@ -17,7 +17,6 @@ export interface StartCommandInput {
   command: string;
   cwd: string;
   workspaceRoot?: string;
-  initialStdin?: string;
   tty?: boolean;
   columns?: number;
   rows?: number;
@@ -347,7 +346,6 @@ export class ProcessSessionManager {
       kill: (signal = "SIGTERM") => terminateProcessTree(child, signal, detached),
       resize: input.tty ? () => undefined : undefined,
     };
-    if (input.initialStdin !== undefined) child.stdin.end(input.initialStdin);
     child.stdout.on("data", (data: Buffer) => this.append(session, data.toString("utf8")));
     child.stderr.on("data", (data: Buffer) => this.append(session, data.toString("utf8")));
     child.on("error", (error) => this.append(session, `${error.message}\n`));
@@ -384,7 +382,6 @@ export class ProcessSessionManager {
       kill: (signal) => pty.kill(signal),
       resize: (columns, rows) => pty.resize(columns, rows),
     };
-    if (input.initialStdin !== undefined) pty.write(input.initialStdin);
     pty.onData((data) => this.append(session, data));
     pty.onExit(({ exitCode, signal }) => {
       this.finish(session, exitCode, signal === 0 ? undefined : String(signal));

@@ -34,6 +34,7 @@ import {
 } from "./local-agent-runtime.js";
 import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
 import { resolveShellCommand, terminateProcessTree } from "./process-platform.js";
+import { HeadTailBuffer } from "./process-sessions.js";
 import { assertAllowedPath } from "./roots.js";
 import {
   isSubagentProviderEnabled,
@@ -98,6 +99,7 @@ export class LocalAgentManager {
   private readonly logger?: LocalAgentManagerLogger;
   private readonly resolveSubagents: () => SubagentsConfig;
   private readonly activeTurns = new Map<string, Promise<void>>();
+  private readonly stopGraders = new Set<() => void>();
   private accepting = true;
   private closePromise?: Promise<void>;
 
@@ -272,16 +274,13 @@ export class LocalAgentManager {
     }
 
     if (action === "approve") {
-      const failedGrader = (record.graderResults ?? []).find(
-        (grader) => grader.timedOut || grader.exitCode !== 0,
-      );
-      if (failedGrader) {
+      if (!gradersPassed(record.graderCommands ?? [], record.graderResults ?? [])) {
         return Result.err(new AgentConflictError({
           code: "AGENT_CONFLICT",
           agentId,
           operation: "review_approve",
           retryable: false,
-          message: `Agent ${agentId} cannot be approved while a deterministic grader is failing: ${failedGrader.command}`,
+          message: `Agent ${agentId} cannot be approved until every deterministic grader has a matching successful result.`,
         }));
       }
       return this.store.updateResult(agentId, {
@@ -327,6 +326,7 @@ export class LocalAgentManager {
   async close(): Promise<void> {
     if (this.closePromise) return this.closePromise;
     this.accepting = false;
+    for (const stop of this.stopGraders) stop();
     const turns = Array.from(this.activeTurns.values());
     this.closePromise = (async () => {
       // Closing pooled runtimes is what interrupts provider turns. Waiting for
@@ -478,10 +478,8 @@ export class LocalAgentManager {
         workspaceRoot,
         current.value.graderCommands ?? [],
       );
-      const gradersPassed = graderResults.every(
-        (grader) => grader.exitCode === 0 && !grader.timedOut,
-      );
-      const needsReview = Boolean(current.value.requireReview) || !gradersPassed;
+      const needsReview = Boolean(current.value.requireReview)
+        || !gradersPassed(current.value.graderCommands ?? [], graderResults);
       const updated = this.store.updateResult(record.id, {
         providerSessionId: runResult.providerSessionId ?? current.value.providerSessionId,
         processId: undefined,
@@ -532,6 +530,10 @@ export class LocalAgentManager {
   ): Promise<LocalAgentGraderResult[]> {
     const results: LocalAgentGraderResult[] = [];
     for (const command of commands) {
+      if (!this.accepting) {
+        results.push({ command, timedOut: false, output: "DevSpace stopped before this grader could run." });
+        break;
+      }
       const result = await this.runGrader(workspaceRoot, command);
       results.push(result);
       if (result.timedOut || result.exitCode !== 0) break;
@@ -545,41 +547,39 @@ export class LocalAgentManager {
   ): Promise<LocalAgentGraderResult> {
     const shell = resolveShellCommand(command);
     const detached = process.platform !== "win32";
-    const child = spawn(shell.executable, shell.args, {
+    // Let Node quote Windows commands without dropping POSIX login-shell arguments.
+    const child = spawn(detached ? shell.executable : command, detached ? shell.args : [], {
       cwd: workspaceRoot,
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
       windowsHide: true,
       detached,
+      ...(detached ? {} : { shell: shell.executable }),
     });
-    let output = "";
-    const append = (chunk: Buffer) => {
-      output = appendBoundedOutput(output, chunk.toString("utf8"), 12_000);
-    };
+    const output = new HeadTailBuffer(12_000);
+    const append = (chunk: Buffer) => output.append(chunk.toString("utf8"));
     child.stdout?.on("data", append);
     child.stderr?.on("data", append);
     return new Promise((resolveResult) => {
       let settled = false;
-      const finish = (result: LocalAgentGraderResult) => {
+      const finish = (exitCode?: number, timedOut = false, error?: string) => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        resolveResult(result);
+        this.stopGraders.delete(stop);
+        if (error) output.append(`\n${error}`);
+        resolveResult({ command, exitCode, timedOut, output: output.drain(12_000).output.trim() });
       };
-      child.once("error", (error) => finish({
-        command,
-        timedOut: false,
-        output: appendBoundedOutput(output, error.message, 12_000),
-      }));
-      child.once("close", (code) => finish({
-        command,
-        exitCode: code ?? undefined,
-        timedOut: false,
-        output: output.trim(),
-      }));
+      const stop = () => {
+        terminateProcessTree(child, "SIGTERM", detached);
+        finish(undefined, false, "DevSpace stopped while this grader was running.");
+      };
+      this.stopGraders.add(stop);
+      child.once("error", (error) => finish(undefined, false, error.message));
+      child.once("close", (code) => finish(code ?? undefined));
       const timer = setTimeout(() => {
         terminateProcessTree(child, "SIGTERM", detached);
-        finish({ command, timedOut: true, output: output.trim() });
+        finish(undefined, true);
       }, 60 * 60_000);
       timer.unref();
     });
@@ -804,11 +804,11 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function appendBoundedOutput(current: string, next: string, maximum: number): string {
-  const combined = current + next;
-  if (combined.length <= maximum) return combined;
-  const half = Math.max(1, Math.floor((maximum - 32) / 2));
-  return `${combined.slice(0, half)}\n... output truncated ...\n${combined.slice(-half)}`;
+function gradersPassed(commands: readonly string[], results: readonly LocalAgentGraderResult[]): boolean {
+  return commands.length === results.length && commands.every((command, index) => {
+    const result = results[index];
+    return result?.command === command && result.exitCode === 0 && !result.timedOut;
+  });
 }
 
 function safeCauseType(cause: unknown): string | undefined {

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { Panic, Result, type Result as BetterResult } from "better-result";
-import { mkdtemp, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { LocalAgentManager } from "./local-agent-manager.js";
@@ -413,6 +414,8 @@ const graderFailure = unwrap(await manager.start({
     `"${process.execPath}" -e "process.exit(1)"`,
   ],
 }));
+assert.equal(graderFailure.requireReview, false);
+assert.equal(graderFailure.reviewStatus, "not_required");
 await waitFor(() => getRecord(graderFailure.id).status === "awaiting_review");
 assert.equal(getRecord(graderFailure.id).graderResults?.at(0)?.exitCode, 1);
 const invalidApproval = await manager.review(
@@ -424,8 +427,45 @@ const invalidApproval = await manager.review(
 assert.equal(invalidApproval.isErr(), true);
 if (invalidApproval.isErr()) {
   assert.equal(invalidApproval.error.code, "AGENT_CONFLICT");
-  assert.match(invalidApproval.error.message, /deterministic grader is failing/);
+  assert.match(invalidApproval.error.message, /every deterministic grader has a matching successful result/);
 }
+
+const expectedGraders = ["first acceptance command", "second acceptance command"];
+const successfulGraders = expectedGraders.map((command) => ({ command, exitCode: 0, timedOut: false, output: "ok" }));
+for (const incomplete of [
+  [],
+  successfulGraders.slice(0, 1),
+  [...successfulGraders].reverse(),
+  [...successfulGraders, successfulGraders[0]!],
+  successfulGraders.map((result) => ({ ...result, timedOut: true })),
+]) {
+  store.update(graderFailure.id, { graderCommands: expectedGraders, graderResults: incomplete });
+  const approval = await manager.review(graderFailure.id, "approve", "Incomplete evidence must not pass.", scope);
+  assert.equal(approval.isErr(), true);
+  assert.equal(getRecord(graderFailure.id).status, "awaiting_review");
+}
+store.update(graderFailure.id, { graderResults: successfulGraders });
+assert.equal(unwrap(await manager.review(graderFailure.id, "approve", "All evidence matches.", scope)).status, "idle");
+
+const graderSuccess = unwrap(await manager.start({
+  target: "qoder",
+  prompt: "produce verifiable acceptance results",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  requireReview: false,
+  graderCommands: [
+    `"${process.execPath}" -e "console.log('GRADER_HEAD'); console.log('x'.repeat(15000)); console.log('GRADER_TAIL')"`,
+    `"${process.execPath}" -e "console.log('SECOND_GRADER_OK')"`,
+  ],
+}));
+await waitFor(() => getRecord(graderSuccess.id).status !== "running");
+const passedGrading = getRecord(graderSuccess.id);
+assert.equal(passedGrading.status, "idle", JSON.stringify(passedGrading.graderResults));
+assert.deepEqual(passedGrading.graderResults?.map(result => result.exitCode), [0, 0]);
+assert.match(passedGrading.graderResults?.[0]?.output ?? "", /GRADER_HEAD/);
+assert.match(passedGrading.graderResults?.[0]?.output ?? "", /GRADER_TAIL/);
+assert.ok((passedGrading.graderResults?.[0]?.output.length ?? 0) <= 12_000);
+assert.equal(passedGrading.graderResults?.[1]?.output, "SECOND_GRADER_OK");
 
 currentSubagents = { ...subagents, enabled: false };
 const disabledAfterReload = await manager.start({
@@ -555,6 +595,20 @@ await waitFor(() => getRecord(defect.id).status === "error");
 assert.equal(getRecord(defect.id).errorCode, "AGENT_INTERNAL_ERROR");
 assert.notEqual(getRecord(defect.id).errorCode, "PROVIDER_EXECUTION_ERROR");
 
+const gradingAtShutdown = unwrap(await manager.start({
+  target: "reviewer",
+  prompt: "run acceptance commands",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  graderCommands: [
+    `"${process.execPath}" -e "require('node:fs').writeFileSync('grader-started', String(process.pid)); setTimeout(() => {}, 10000)"`,
+    `"${process.execPath}" -e "require('node:fs').writeFileSync('grader-must-not-run', 'unexpected')"`,
+  ],
+}));
+await waitFor(() => existsSync(join(root, "grader-started")) || getRecord(gradingAtShutdown.id).status !== "running");
+assert.ok(existsSync(join(root, "grader-started")), JSON.stringify(getRecord(gradingAtShutdown.id)));
+const graderPid = Number(await readFile(join(root, "grader-started"), "utf8"));
+
 const shuttingDown = unwrap(await manager.start({
   target: "reviewer",
   prompt: "hold during shutdown",
@@ -565,7 +619,20 @@ await waitFor(() => runtimes.get(shuttingDown.id)?.inputs.length === 1);
 const closing = manager.close();
 await new Promise<void>((resolve) => setImmediate(resolve));
 assert.equal(runtimes.get(shuttingDown.id)?.closed, true);
+await waitFor(() => manager.activeTurnCount === 0);
 await closing;
+await waitFor(() => {
+  try { process.kill(graderPid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+});
+assert.equal(existsSync(join(root, "grader-must-not-run")), false);
+const closedStore = new LocalAgentStore(stateDir);
+const interruptedGrader = closedStore.getById(gradingAtShutdown.id);
+assert.ok(interruptedGrader);
+assert.equal(interruptedGrader?.status, "awaiting_review");
+assert.equal(interruptedGrader.graderResults?.[0]?.exitCode, undefined);
+assert.match(interruptedGrader.graderResults?.[0]?.output ?? "", /stopped/);
+closedStore.close();
 
 await manager.close();
 await rm(root, { recursive: true, force: true });

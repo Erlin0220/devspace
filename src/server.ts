@@ -887,7 +887,7 @@ export function createMcpServer(
       const visibleAgents = includeBootstrapContext ? cardAgents : [];
       const loadedAgentsFiles = includeBootstrapContext ? cardAgentsFiles : [];
       const availableAgentsFileOutputs = includeBootstrapContext ? cardAvailableAgentsFiles : [];
-      const agentRecoveryInstruction = cardAgentProviders.length > 0
+      const agentRecoveryInstruction = commandRecoveryInstruction && cardAgentProviders.length > 0
         ? "Local subagent recovery is available in this workspace: after the one exec_command diagnostic attempt, use run_agent when needed and reuse its agent id with get_agent/continue_agent unless it terminally fails."
         : undefined;
       const cardInstruction = [

@@ -172,7 +172,10 @@ test('GC keeps current and previous installs while removing only owned stale sta
   await mkdir(join(home, 'startup'), { recursive: true }); await writeFile(join(home, 'startup/runtime.xml'), 'old');
   const log = join(home, 'logs/runtime.log'); await mkdir(join(home, 'logs'), { recursive: true }); await writeFile(log, 'old');
   const oldTime = new Date(Date.now() - 40 * 24 * 60 * 60_000); await utimes(log, oldTime, oldTime);
+  const preview = await collectGarbage(home, { dryRun: true });
+  await access(old);
   const result = await collectGarbage(home);
+  assert.deepEqual(result.actions, preview.actions);
   assert.ok(result.actions.some(action => action.kind === 'old-install'));
   await access(current); await access(previous);
   await assert.rejects(access(old)); await assert.rejects(access(join(apps, 'orphan.stage-dead')));
@@ -182,6 +185,25 @@ test('GC keeps current and previous installs while removing only owned stale sta
   await assert.rejects(access(join(home, 'control-endpoint.json')));
   await assert.rejects(access(join(home, 'startup')));
   await assert.rejects(access(log));
+});
+
+test('GC reads every retention owner before deletion and fails closed on unreadable records', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'personal-gc-corrupt-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const app = join(home, 'apps', 'retain-on-error');
+  await mkdir(app, { recursive: true });
+  await writeFile(join(app, '.personal-install.json'), JSON.stringify({ schema: 1, owner: 'personal-devspace' }));
+  for (const name of ['install.json', 'install-attempt.json', 'personal.json', 'upgrade-review.json']) {
+    const path = join(home, name);
+    await writeFile(path, '{broken');
+    await assert.rejects(collectGarbage(home), /Cannot read/);
+    await assert.rejects(collectGarbage(home, { dryRun: true }), /Cannot read/);
+    await access(app);
+    await rm(path);
+  }
+  await mkdir(join(home, 'install.json'));
+  await assert.rejects(collectGarbage(home), /Cannot read/);
+  await access(app);
 });
 
 test('GC removes only old Personal-owned review worktrees and keeps the current candidate', async t => {

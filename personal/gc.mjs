@@ -23,8 +23,12 @@ export async function collectGarbage(home = stateHome(), { dryRun = false, now =
   };
   if (await installerRunning(home)) return { skipped: 'installer-running', actions };
 
-  const installation = await readJson(statePath(home, 'install'), null).catch(() => null);
-  const attempt = await readJson(statePath(home, 'installAttempt'), null).catch(() => null);
+  // Resolve every retention owner before deleting anything. Only ENOENT is an
+  // absent record; corrupt or unreadable state must not become permission to GC.
+  const installation = await readJson(statePath(home, 'install'), null);
+  const attempt = await readJson(statePath(home, 'installAttempt'), null);
+  const personal = await readJson(statePath(home, 'personal'), null);
+  const review = await readJson(statePath(home, 'upgradeReview'), null);
   const keepApps = new Set([installation?.packageRoot, attempt?.previous].filter(Boolean).map(path => resolve(path)));
   const apps = join(home, 'apps');
   for (const entry of await entries(apps)) {
@@ -71,8 +75,6 @@ export async function collectGarbage(home = stateHome(), { dryRun = false, now =
     await remove('retired-task-cache', startup);
   }
 
-  const personal = await readJson(statePath(home, 'personal'), null).catch(() => null);
-  const review = await readJson(statePath(home, 'upgradeReview'), null).catch(() => null);
   const sourceRoot = personal?.sourceRoot;
   if (typeof sourceRoot === 'string') {
     const listing = await exec('git', ['worktree', 'list', '--porcelain'], {

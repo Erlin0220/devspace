@@ -10,9 +10,39 @@ import { startLocalControl, bindPort } from '../desktop/local-control.mjs';
 import { atomicJson } from '../state.mjs';
 import { runtimeEnvironment, readPersonalConfig } from '../config.mjs';
 import { discoverCodexCommand, taskXml, ownerId } from '../desktop/platform.mjs';
+import { runtimeSnapshot, waitForRuntime } from '../runtime.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const tick = () => new Promise(resolve => setImmediate(resolve));
+test('runtime health separates endpoint response from owned readiness and never follows redirects', async t => {
+  const home = join(tmpdir(), 'personal-health-fixture');
+  let status = 200;
+  let body = JSON.stringify({ name: 'personal-devspace', owner: ownerId(home), runningProcesses: 2 });
+  const server = createServer((_request, response) => {
+    response.writeHead(status, status === 302 ? { Location: 'http://127.0.0.1:1/other' } : {});
+    response.end(body);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  const known = { personal: {}, config: { port: server.address().port } };
+  const ready = await runtimeSnapshot(home, known);
+  assert.equal(ready.responding, true); assert.equal(ready.running, true); assert.equal(ready.runningProcesses, 2);
+  for (const [code, content] of [[500, 'failure'], [503, body], [200, 'not JSON'], [200, 'null'],
+    [200, JSON.stringify({ name: 'personal-devspace', owner: 'another-install' })], [302, 'redirect']]) {
+    status = code; body = content;
+    const snapshot = await runtimeSnapshot(home, known);
+    assert.equal(snapshot.responding, true, `HTTP ${code} must not prove a stopped endpoint`);
+    assert.equal(snapshot.running, false); assert.equal(snapshot.owned, false);
+    assert.equal(snapshot.runningProcesses, 0);
+    await assert.rejects(waitForRuntime(home, value => !value.responding, {
+      known, attempts: 1, intervalMs: 0, errorMessage: 'Endpoint is still responding',
+    }), /still responding/);
+  }
+  await new Promise(resolve => { server.close(resolve); server.closeAllConnections(); });
+  const stopped = await runtimeSnapshot(home, known);
+  assert.equal(stopped.responding, false); assert.equal(stopped.running, false);
+});
+
 test('observer failures and failed status projections cannot reverse a successful operation', async () => {
   let stopped = false;
   const controller = createDesktopController({ status: async () => { throw new Error('status unavailable'); }, suspend: async () => { stopped = true; } }, { noticeTtl: 10 });

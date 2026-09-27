@@ -143,6 +143,7 @@ export class LocalAgentStore {
 
   create(input: CreateLocalAgentRecordInput): LocalAgentRecord {
     const now = new Date().toISOString();
+    const requireReview = input.requireReview ?? input.executionMode === "goal";
     const record: LocalAgentRecord = {
       id: `agt_${randomUUID().replaceAll("-", "").slice(0, 8)}`,
       workspaceId: input.workspaceId,
@@ -153,8 +154,8 @@ export class LocalAgentStore {
       effort: input.effort,
       executionMode: input.executionMode ?? "turn",
       goalTurns: input.goalTurns,
-      requireReview: input.requireReview ?? input.executionMode === "goal",
-      reviewStatus: input.requireReview || input.executionMode === "goal" ? "pending" : "not_required",
+      requireReview,
+      reviewStatus: requireReview ? "pending" : "not_required",
       attempts: 0,
       maxAttempts: input.maxAttempts ?? 5,
       graderCommands: input.graderCommands ?? [],

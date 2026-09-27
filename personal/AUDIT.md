@@ -111,3 +111,25 @@ hooks, MCP replay/session retention, dynamic subagent resolution, the wait-time
 compatibility alias and tool instructions all meet there. Keep future additions
 behind the existing option hooks rather than adding new Personal-specific branches
 to generic server flow.
+
+## Execution and recovery contract follow-up - 2026-09-27
+
+The unused `initialStdin` process extension and its self-only regression were
+removed; ordinary stdin continues through the existing session write contract.
+Personal command-recovery hints now require the Personal extension option, so
+an upstream-only server does not advertise unregistered recovery tools.
+
+Deterministic graders reuse the existing bounded output buffer and process-tree
+termination primitive. Windows commands use Node's shell quoting while POSIX
+keeps the existing login-shell arguments. Manager shutdown also stops graders
+and prevents later acceptance commands from starting. Completion and approval
+share one check requiring a matching successful result for every configured
+grader; review intent and initial review status derive from the same value.
+
+Runtime health distinguishes receiving an HTTP response from verified owned
+readiness, and does not follow redirects. Stop checks require the endpoint to
+stop responding rather than merely stop reporting a healthy owned Runtime.
+GC reads all retention-owner records before deleting anything and preserves
+existing read errors instead of converting them to absent state. Regressions
+cover these failure paths, dry-run equivalence, actual command execution and
+grader process shutdown; no replacement state machine or dependency was added.

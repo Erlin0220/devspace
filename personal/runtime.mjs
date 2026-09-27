@@ -19,13 +19,13 @@ async function runtimeSettings(home = stateHome()) {
 }
 async function runtimeHealthSnapshot(home, config, timeoutMs = 2_000) {
   const origin = `http://127.0.0.1:${config.port}`;
-  const health = await fetch(`${origin}/personal-healthz`, { signal: AbortSignal.timeout(timeoutMs) })
-    .then(async response => response.ok ? response.json() : null)
-    .catch(() => null);
-  const owned = health?.name === 'personal-devspace' && health.owner === ownerId(home);
+  const response = await fetch(`${origin}/personal-healthz`, { signal: AbortSignal.timeout(timeoutMs), redirect: 'manual' }).catch(() => null);
+  const health = response?.ok ? await response.json().catch(() => null) : null;
+  if (response && !response.ok) await response.body?.cancel().catch(() => {});
+  const owned = Boolean(health?.name === 'personal-devspace' && health.owner === ownerId(home));
   return {
     origin,
-    responding: health !== null,
+    responding: response !== null,
     owned,
     running: owned,
     runningProcesses: owned ? health.runningProcesses ?? 0 : 0,

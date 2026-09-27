@@ -63,7 +63,7 @@ async function startReady(home) {
 }
 async function stopReady(home) {
   await jobAction(home, 'runtime', 'stop');
-  await waitForRuntime(home, snapshot => !snapshot.running, {
+  await waitForRuntime(home, snapshot => !snapshot.responding, {
     attempts: 40,
     intervalMs: 100,
     errorMessage: 'Runtime owner stopped but the health endpoint is still responding',
