@@ -32,7 +32,7 @@ assert.deepEqual(qoderInteractiveGoalArgs({
   "--name",
   "DevSpace agt_qoder",
   "--permission-mode",
-  "auto",
+  "dont_ask",
   "--context-window",
   "1000000",
   "--model",
@@ -51,7 +51,15 @@ assert.deepEqual(qoderInteractiveGoalArgs({
   "--resume",
   "existing-session",
   "--permission-mode",
-  "auto",
+  "dont_ask",
+]);
+assert.deepEqual(qoderInteractiveGoalArgs({
+  ...context,
+  writeMode: "full_access",
+  prompt: "finish the project",
+}, "local-session", context.agentId).slice(4, 6), [
+  "--permission-mode",
+  "bypass_permissions",
 ]);
 assert.equal(qoderInteractiveGoalArgs({
   ...context,

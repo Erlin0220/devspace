@@ -316,7 +316,7 @@ function qoderAuthorityArgs(input: {
   }
   const args = [
     "--permission-mode",
-    writeMode === "full_access" ? "bypass_permissions" : "auto",
+    writeMode === "full_access" ? "bypass_permissions" : "dont_ask",
     "--context-window",
     QODER_CONTEXT_WINDOW,
   ];
