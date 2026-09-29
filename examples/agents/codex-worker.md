@@ -1,13 +1,14 @@
 ---
 schema: devspace-agent/v1
 name: codex-worker
-description: Implementation profile for focused coding tasks with clear acceptance criteria.
+description: Writable implementation profile for one focused task with clear acceptance criteria in an isolated DevSpace worktree.
 provider: codex
-model: gpt-5.4
+writeMode: allowed
 ---
 
-Implement the requested change with minimal surface area. Use this profile when
-the prompt already defines the desired behavior or acceptance criteria.
+Implement the requested change with minimal surface area. Use this profile only
+when the current DevSpace workspace is already opened with mode=worktree and the
+prompt defines the desired behavior or acceptance criteria.
 
 - Read nearby code before editing.
 - Match existing project patterns instead of introducing new abstractions.

@@ -28,6 +28,20 @@ try {
     ].join("\n"),
   );
   await writeFile(
+    join(configDir, "agents", "trusted-full.md"),
+    [
+      "---",
+      "name: trusted-full",
+      "description: User-owned full access profile.",
+      "provider: codex",
+      "writeMode: full_access",
+      "---",
+      "",
+      "Trusted body.",
+      "",
+    ].join("\n"),
+  );
+  await writeFile(
     join(workspaceRoot, ".devspace", "agents", "reviewer.md"),
     [
       "---",
@@ -36,6 +50,7 @@ try {
       "provider: claude",
       "model: sonnet",
       "effort: high",
+      "writeMode: read_only",
       "---",
       "",
       "Project body.",
@@ -56,6 +71,20 @@ try {
       "",
     ].join("\n"),
   );
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "untrusted-full.md"),
+    [
+      "---",
+      "name: untrusted-full",
+      "description: Repository-controlled full access request.",
+      "provider: codex",
+      "writeMode: full_access",
+      "---",
+      "",
+      "Untrusted body.",
+      "",
+    ].join("\n"),
+  );
 
   const enabledConfig = loadConfig({
     DEVSPACE_CONFIG_DIR: configDir,
@@ -65,20 +94,25 @@ try {
   });
   const profiles = await loadLocalAgentProfiles(enabledConfig, workspaceRoot);
 
-  assert.equal(profiles.length, 1);
+  assert.equal(profiles.length, 2);
   assert.equal(profiles[0]?.name, "reviewer");
   assert.equal(profiles[0]?.description, "Project reviewer #1.");
   assert.equal(profiles[0]?.provider, "claude");
   assert.equal(profiles[0]?.model, "sonnet");
   assert.equal(profiles[0]?.effort, "high");
+  assert.equal(profiles[0]?.writeMode, "read_only");
   assert.equal(profiles[0]?.body, "Project body.");
+  assert.equal(profiles[1]?.name, "trusted-full");
+  assert.equal(profiles[1]?.writeMode, "full_access");
   assert.deepEqual(summarizeLocalAgentProfile(profiles[0]!), {
     name: "reviewer",
     description: "Project reviewer #1.",
     provider: "claude",
     model: "sonnet",
     effort: "high",
+    writeMode: "read_only",
   });
+  assert.equal(summarizeLocalAgentProfile(profiles[1]!).writeMode, "full_access");
 
   await writeFile(
     join(workspaceRoot, ".devspace", "agents", "custom.md"),
@@ -94,7 +128,22 @@ try {
     ].join("\n"),
   );
   const profilesWithInvalid = await loadLocalAgentProfiles(enabledConfig, workspaceRoot);
-  assert.deepEqual(profilesWithInvalid.map((profile) => profile.name), ["reviewer"]);
+  assert.deepEqual(profilesWithInvalid.map((profile) => profile.name), ["reviewer", "trusted-full"]);
+
+  await writeFile(
+    join(workspaceRoot, ".devspace", "agents", "invalid-write-mode.md"),
+    [
+      "---",
+      "name: invalid-write-mode",
+      "description: Invalid authority.",
+      "provider: codex",
+      "writeMode: owner",
+      "---",
+      "",
+    ].join("\n"),
+  );
+  const profilesWithInvalidWriteMode = await loadLocalAgentProfiles(enabledConfig, workspaceRoot);
+  assert.deepEqual(profilesWithInvalidWriteMode.map((profile) => profile.name), ["reviewer", "trusted-full"]);
 
   const disabledConfig = loadConfig({
     DEVSPACE_CONFIG_DIR: configDir,

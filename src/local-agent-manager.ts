@@ -14,6 +14,7 @@ import {
   type LocalAgentProfile,
   type LocalAgentProvider,
   isLocalAgentProvider,
+  localAgentProfileWriteMode,
 } from "./local-agent-profiles.js";
 import {
   resolveLocalAgentTarget,
@@ -31,6 +32,7 @@ import {
   type LocalAgentRunInput,
   type LocalAgentRuntimeContext,
   type LocalAgentWriteMode,
+  localAgentProviderSupportsWriteMode,
 } from "./local-agent-runtime.js";
 import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
 import { resolveShellCommand, terminateProcessTree } from "./process-platform.js";
@@ -77,6 +79,7 @@ export interface LocalAgentManagerOptions {
   allowedRoots?: readonly string[];
   logger?: LocalAgentManagerLogger;
   subagents: SubagentsConfig | (() => SubagentsConfig);
+  maxActiveTurnsPerWorkspace?: number;
 }
 
 export type AgentStartError = AgentTargetError | AgentScopeError | AgentConflictError | AgentStoreError;
@@ -98,6 +101,7 @@ export class LocalAgentManager {
   private readonly allowedRoots?: readonly string[];
   private readonly logger?: LocalAgentManagerLogger;
   private readonly resolveSubagents: () => SubagentsConfig;
+  private readonly maxActiveTurnsPerWorkspace?: number;
   private readonly activeTurns = new Map<string, Promise<void>>();
   private readonly stopGraders = new Set<() => void>();
   private accepting = true;
@@ -111,6 +115,7 @@ export class LocalAgentManager {
     this.agentDir = options.agentDir;
     this.allowedRoots = options.allowedRoots;
     this.logger = options.logger;
+    this.maxActiveTurnsPerWorkspace = options.maxActiveTurnsPerWorkspace;
     const subagents = options.subagents;
     this.resolveSubagents = typeof subagents === "function" ? subagents : () => subagents;
   }
@@ -177,6 +182,7 @@ export class LocalAgentManager {
           message: "Goal execution is currently provided by Qoder's native Goal mode.",
         }));
       }
+      yield* manager.workspaceCapacityResult(workspaceRoot, input.workspaceId, "start");
       const record = yield* manager.store.createResult({
         workspaceId: input.workspaceId,
         workspaceRoot,
@@ -238,6 +244,7 @@ export class LocalAgentManager {
         manager.resolveSubagents(),
       );
       yield* manager.driverResult(record.provider, "continue", agentId);
+      yield* manager.workspaceCapacityResult(record.workspaceRoot, scope.workspaceId, "continue");
       return manager.begin(record, prompt, overrides, scope.workspaceId);
     });
   }
@@ -637,13 +644,36 @@ export class LocalAgentManager {
     }
     const body = profile?.body.trim();
     const fullPrompt = body ? `${body}\n\nTask:\n${prompt}` : prompt;
+    const writeMode = overrides.writeMode
+      ?? (profile
+        ? localAgentProfileWriteMode(profile)
+        : record.provider === "agy" ? "full_access" : "allowed");
+    const provider = isLocalAgentProvider(record.provider) ? record.provider : undefined;
+    if (!provider) {
+      return Result.err(new AgentTargetError({
+        code: "PROVIDER_NOT_CONFIGURED",
+        target: record.profileName,
+        retryable: false,
+        message: `No local agent provider is configured for ${record.provider}.`,
+      }));
+    }
+    if (!localAgentProviderSupportsWriteMode(provider, writeMode)) {
+      return Result.err(new AgentTargetError({
+        code: "PROVIDER_NOT_CONFIGURED",
+        target: record.profileName,
+        provider,
+        operation: "configure_permissions",
+        retryable: false,
+        message: `${record.provider} does not support subagent write mode ${writeMode}.`,
+      }));
+    }
     return Result.ok({
       prompt: fullPrompt,
       workspaceRoot: record.workspaceRoot,
       providerSessionId: record.providerSessionId,
       executionMode: record.executionMode ?? "turn",
       goalTurns: record.goalTurns,
-      writeMode: overrides.writeMode ?? (record.provider === "agy" ? "full_access" : "allowed"),
+      writeMode,
       model: record.model ?? profile?.model,
       effort: record.effort ?? profile?.effort,
       modelOverrideRequested: overrides.model !== undefined,
@@ -756,6 +786,27 @@ export class LocalAgentManager {
         message: "Workspace root is outside configured allowed roots.",
       }));
     }
+  }
+
+  private workspaceCapacityResult(
+    workspaceRoot: string,
+    workspaceId: string | undefined,
+    operation: "start" | "continue",
+  ): BetterResult<void, AgentConflictError | AgentStoreError> {
+    const limit = this.maxActiveTurnsPerWorkspace;
+    if (limit === undefined) return Result.ok(undefined);
+    const listed = this.store.listResult({ workspaceId, workspaceRoot });
+    if (listed.isErr()) return listed;
+    const active = listed.value.filter(
+      (record) => record.status === "starting" || record.status === "running",
+    ).length;
+    if (active < limit) return Result.ok(undefined);
+    return Result.err(new AgentConflictError({
+      code: "AGENT_CONFLICT",
+      operation,
+      retryable: true,
+      message: `Workspace already has ${active} active subagent executions; the limit is ${limit}. Reuse or inspect an existing agent before starting another turn.`,
+    }));
   }
 
   private agentWorkspaceResult(

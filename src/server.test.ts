@@ -55,6 +55,10 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
     items?: { properties?: Record<string, unknown> };
   } | undefined;
   assert.ok(providerSchema?.items?.properties?.note);
+  const agentSchema = outputProperties?.agents as {
+    items?: { properties?: Record<string, unknown> };
+  } | undefined;
+  assert.ok(agentSchema?.items?.properties?.writeMode);
 
   const firstStructured = structuredContent(first);
   assert.equal(firstStructured.workspaceId, structuredContent(repeated).workspaceId);
@@ -71,11 +75,17 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
     providerNote,
   );
   assert.ok(Array.isArray(firstStructured.agents));
+  assert.equal(
+    (firstStructured.agents as Array<Record<string, unknown>>)[0]?.writeMode,
+    "read_only",
+  );
   assert.ok(Array.isArray(firstStructured.skillDiagnostics));
   assert.equal("workspaceReused" in firstStructured, false);
   assert.equal("includeBootstrapContext" in firstStructured, false);
   assert.match(String(firstStructured.instruction ?? ""), /Local subagent recovery is available in this workspace/i);
   assert.match(String(firstStructured.instruction ?? ""), /reuse its agent id with get_agent\/continue_agent/i);
+  assert.match(String(firstStructured.instruction ?? ""), /read_only subagent profiles proactively/i);
+  assert.match(String(firstStructured.instruction ?? ""), /isolated worktree workspace/i);
 
   const repeatedStructured = structuredContent(repeated);
   assert.equal(repeatedStructured.agentsFiles, undefined);
@@ -88,6 +98,7 @@ test("open_workspace keeps lifecycle flags out of model output and preserves com
   assert.equal("includeBootstrapContext" in repeatedStructured, false);
   assert.match(String(repeatedStructured.instruction ?? ""), /Local subagent recovery is available in this workspace/i);
   assert.match(String(repeatedStructured.instruction ?? ""), /reuse its agent id with get_agent\/continue_agent/i);
+  assert.match(String(repeatedStructured.instruction ?? ""), /read_only subagent profiles proactively/i);
 
   const card = responseCard(repeated);
   assert.equal(card.workspaceReused, true);
@@ -349,6 +360,7 @@ async function fixture(
     "name: reviewer",
     "description: Reviews project changes.",
     "provider: codex",
+    "writeMode: read_only",
     "---",
     "Review changes.",
   ].join("\n"));

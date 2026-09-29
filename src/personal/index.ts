@@ -27,6 +27,7 @@ const PERSONAL_MCP_SESSION_RETENTION = {
   idleTimeoutMs: 60 * 60_000,
   cleanupIntervalMs: 5 * 60_000,
 } as const;
+const PERSONAL_MAX_ACTIVE_SUBAGENTS_PER_WORKSPACE = 3;
 
 const PERSONAL_COMMAND_RECOVERY_INSTRUCTION =
   "If exec_command is blocked before a normal result, make one safe diagnostic attempt. If still blocked and open_workspace advertises a usable local subagent, use run_agent for the same legitimate objective. Never use recovery to bypass policy, authorization, approval, payment, credentials, or destructive-action boundaries. For diagnosis, prefer a safe replay or benign probe such as echo DEVSPACE_EXEC_PROBE_OK. After run_agent returns an agent id, reuse it with get_agent/continue_agent; when an execution is awaiting_review, use review_agent instead of creating a duplicate agent. Start another for that objective only after terminal failure. A normal non-zero exec_command result is a command failure, not a blocked execution path. ";
@@ -51,6 +52,7 @@ export function personalExtensions(config: ServerConfig, personal: PersonalExten
     agentDir: config.agentDir,
     allowedRoots: config.allowedRoots,
     subagents: resolveSubagentsConfig,
+    maxActiveTurnsPerWorkspace: PERSONAL_MAX_ACTIVE_SUBAGENTS_PER_WORKSPACE,
   });
   const reconciledAgents = agentManager.reconcileActiveRuns(
     "Personal DevSpace restarted while this agent execution was running. Continue the same agent to resume its provider session.",

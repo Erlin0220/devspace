@@ -94,7 +94,16 @@ test('API token stays separate from OAuth; invalid credentials are rejected', as
 
 test('native subagent tools bridge the existing agent runtime without MCP App metadata', async t => {
   const root = await mkdtemp(join(tmpdir(), 'personal-subagents-'));
-  const project = join(root, 'project'); await mkdir(project);
+  const project = join(root, 'project'); await mkdir(join(project, '.devspace', 'agents'), { recursive: true });
+  await writeFile(join(project, '.devspace', 'agents', 'codex-worker.md'), [
+    '---',
+    'name: codex-worker',
+    'description: Writable isolated worker.',
+    'provider: codex',
+    'writeMode: allowed',
+    '---',
+    'Implement only in an isolated worktree.',
+  ].join('\n'));
   t.after(async () => { await rm(root, { recursive: true, force: true }); });
   const loaded = loadConfig({ DEVSPACE_CONFIG_DIR: join(root, 'config'), DEVSPACE_ALLOWED_ROOTS: project,
     DEVSPACE_STATE_DIR: join(root, 'state'), DEVSPACE_WORKTREE_ROOT: join(root, 'worktrees'), DEVSPACE_AGENT_DIR: join(root, 'agents'),
@@ -139,6 +148,9 @@ test('native subagent tools bridge the existing agent runtime without MCP App me
   assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /high-level objective/i);
   assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /do not include credentials/i);
   assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /goal/i);
+  const rejectedWritable = await client.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex-worker', prompt: 'implement' } });
+  assert.equal(rejectedWritable.isError, true);
+  assert.match(JSON.stringify(rejectedWritable), /WRITABLE_PROFILE_REQUIRES_WORKTREE/);
   const run = await client.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex-explorer', prompt: 'inspect' } });
   assert.deepEqual(run.structuredContent, { id: 'agt_test', status: 'running' });
   const get = await client.callTool({ name: 'get_agent', arguments: { workspaceId: workspace.id, agentId: 'agt_test' } });

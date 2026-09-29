@@ -29,6 +29,7 @@ const profiles: LocalAgentProfile[] = [
     name: "reviewer",
     description: "Review changes.",
     provider: "codex",
+    writeMode: "read_only",
     filePath: "/project/reviewer.md",
     body: "Review only.",
     disabled: false,
@@ -56,4 +57,6 @@ assert.deepEqual(catalog.providers.map((provider) => provider.id), ["codex", "cl
 assert.deepEqual(catalog.profiles.map((profile) => profile.name), ["reviewer", "custom"]);
 assert.equal(catalog.profiles[0]?.model, "gpt-default");
 assert.equal(catalog.profiles[0]?.effort, "medium");
+assert.equal(catalog.profiles[0]?.writeMode, "read_only");
 assert.equal(catalog.profiles[1]?.model, "gpt-custom");
+assert.equal(catalog.profiles[1]?.writeMode, "allowed");

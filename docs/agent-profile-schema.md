@@ -26,6 +26,7 @@ description: Read-only reviewer for bugs, security risks, and missing tests.
 provider: codex
 model: gpt-5.4
 effort: high
+writeMode: read_only
 disabled: false
 ---
 
@@ -121,6 +122,26 @@ DevSpace passes this through to providers that expose a matching control:
 - `cursor` and `copilot`: ACP thought-level config when supported.
 - `grok`: `--reasoning-effort` on startup and xAI's ACP model metadata for resumed sessions.
 
+### `writeMode`
+
+Optional mechanical authority for the profile:
+
+```yaml
+writeMode: read_only
+writeMode: allowed
+writeMode: full_access
+```
+
+`read_only` is the recommended default for explorer and reviewer profiles. It is
+enforced by the provider integration rather than relying only on prompt wording.
+`allowed` permits normal workspace edits. `full_access` is provider-specific and
+should be reserved for profiles whose task genuinely requires that authority.
+Only user-level profiles under `~/.devspace/agents` may request `full_access`;
+workspace-local `.devspace/agents` profiles are repository-controlled and cannot
+expand authority beyond `allowed`. Profiles that omit `writeMode` default to
+`allowed` even for providers whose raw-provider default is broader. Profiles
+requesting a mode that their provider cannot support fail before the turn is run.
+
 ### `disabled`
 
 Optional boolean. Disabled profiles are not exposed.
@@ -161,7 +182,8 @@ devspace agents show <id> --json
   "description": "Read-only reviewer for bugs, security risks, and missing tests.",
   "provider": "codex",
   "model": "gpt-5.4",
-  "effort": "high"
+  "effort": "high",
+  "writeMode": "read_only"
 }
 ```
 

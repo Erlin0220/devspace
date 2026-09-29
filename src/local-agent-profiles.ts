@@ -3,6 +3,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { ServerConfig } from "./config.js";
+import type { LocalAgentWriteMode } from "./local-agent-runtime.js";
 
 export type LocalAgentProvider = "codex" | "claude" | "opencode" | "pi" | "cursor" | "copilot" | "grok" | "qoder" | "agy";
 
@@ -24,6 +25,7 @@ export interface LocalAgentProfile {
   provider: LocalAgentProvider;
   model?: string;
   effort?: string;
+  writeMode?: LocalAgentWriteMode;
   filePath: string;
   body: string;
   disabled: boolean;
@@ -35,6 +37,11 @@ export interface LocalAgentProfileSummary {
   provider: LocalAgentProvider;
   model?: string;
   effort?: string;
+  writeMode?: LocalAgentWriteMode;
+}
+
+export function localAgentProfileWriteMode(profile: LocalAgentProfile): LocalAgentWriteMode {
+  return profile.writeMode ?? "allowed";
 }
 
 interface ParsedFrontmatter {
@@ -53,13 +60,13 @@ export async function loadLocalAgentProfiles(
   if (!config.subagents.enabled) return [];
 
   const profileDirs = [
-    config.devspaceAgentsDir,
-    join(workspaceRoot, ".devspace", "agents"),
+    { directory: config.devspaceAgentsDir, allowFullAccess: true },
+    { directory: join(workspaceRoot, ".devspace", "agents"), allowFullAccess: false },
   ];
   const profilesByName = new Map<string, LocalAgentProfile>();
 
-  for (const directory of profileDirs) {
-    for (const profile of await loadProfilesFromDirectory(directory)) {
+  for (const { directory, allowFullAccess } of profileDirs) {
+    for (const profile of await loadProfilesFromDirectory(directory, allowFullAccess)) {
       profilesByName.set(profile.name, profile);
     }
   }
@@ -78,10 +85,14 @@ export function summarizeLocalAgentProfile(
     provider: profile.provider,
     model: profile.model,
     effort: profile.effort,
+    writeMode: localAgentProfileWriteMode(profile),
   };
 }
 
-async function loadProfilesFromDirectory(directory: string): Promise<LocalAgentProfile[]> {
+async function loadProfilesFromDirectory(
+  directory: string,
+  allowFullAccess: boolean,
+): Promise<LocalAgentProfile[]> {
   const resolvedDirectory = resolve(directory);
   if (!existsSync(resolvedDirectory)) return [];
 
@@ -94,7 +105,7 @@ async function loadProfilesFromDirectory(directory: string): Promise<LocalAgentP
 
     const filePath = join(resolvedDirectory, entry.name);
     try {
-      profiles.push(await loadProfileFile(filePath));
+      profiles.push(await loadProfileFile(filePath, allowFullAccess));
     } catch (error) {
       console.warn(`Skipping invalid subagent profile ${filePath}: ${errorMessage(error)}`);
     }
@@ -103,10 +114,10 @@ async function loadProfilesFromDirectory(directory: string): Promise<LocalAgentP
   return profiles;
 }
 
-async function loadProfileFile(filePath: string): Promise<LocalAgentProfile> {
+async function loadProfileFile(filePath: string, allowFullAccess: boolean): Promise<LocalAgentProfile> {
   const content = await readFile(filePath, "utf8");
   const parsed = parseFrontmatter(content, filePath);
-  return profileFromFrontmatter(parsed.frontmatter, parsed.body, filePath);
+  return profileFromFrontmatter(parsed.frontmatter, parsed.body, filePath, allowFullAccess);
 }
 
 function parseFrontmatter(content: string, filePath: string): ParsedFrontmatter {
@@ -148,6 +159,7 @@ function profileFromFrontmatter(
   frontmatter: Record<string, unknown>,
   body: string,
   filePath: string,
+  allowFullAccess: boolean,
 ): LocalAgentProfile {
   const name = readString(frontmatter, "name") ?? basename(filePath, ".md");
   const description = readString(frontmatter, "description");
@@ -156,16 +168,32 @@ function profileFromFrontmatter(
     throw new Error(`Subagent profile is missing description: ${filePath}`);
   }
 
+  const writeMode = readWriteMode(frontmatter, filePath);
+  if (writeMode === "full_access" && !allowFullAccess) {
+    throw new Error(`Workspace subagent profiles cannot request full_access: ${filePath}`);
+  }
+
   return {
     name,
     description,
     provider,
     model: readString(frontmatter, "model"),
     effort: readString(frontmatter, "effort"),
+    writeMode,
     filePath,
     body,
     disabled: frontmatter.disabled === true,
   };
+}
+
+function readWriteMode(
+  frontmatter: Record<string, unknown>,
+  filePath: string,
+): LocalAgentWriteMode | undefined {
+  const value = readString(frontmatter, "writeMode");
+  if (value === undefined) return undefined;
+  if (value === "read_only" || value === "allowed" || value === "full_access") return value;
+  throw new Error(`Subagent profile writeMode must be read_only, allowed, or full_access: ${filePath}`);
 }
 
 function readProvider(frontmatter: Record<string, unknown>, filePath: string): LocalAgentProvider {

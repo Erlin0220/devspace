@@ -283,6 +283,7 @@ const workspaceLocalAgentOutputSchema = z.object({
   provider: z.string(),
   model: z.string().optional(),
   effort: z.string().optional(),
+  writeMode: z.enum(["read_only", "allowed", "full_access"]).optional(),
 });
 
 const workspaceLocalAgentProviderOutputSchema = z.object({
@@ -890,11 +891,15 @@ export function createMcpServer(
       const agentRecoveryInstruction = commandRecoveryInstruction && cardAgentProviders.length > 0
         ? "Local subagent recovery is available in this workspace: after the one exec_command diagnostic attempt, use run_agent when needed and reuse its agent id with get_agent/continue_agent unless it terminally fails."
         : undefined;
+      const agentRoutingInstruction = cardAgents.some((agent) => agent.writeMode === "read_only")
+        ? "Use advertised read_only subagent profiles proactively for bounded read-heavy/noisy investigation or independent review when isolation materially helps; keep small or tightly sequential work in the host. Run writable profiles only from an isolated worktree workspace."
+        : undefined;
       const cardInstruction = [
         config.skillsEnabled
           ? "Use this workspaceId for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file. When a task matches an available skill in skills, read its path before proceeding."
           : "Use this workspaceId for subsequent work in this project. Keep reusing it while working in this project. Follow loaded agentsFiles instructions. Before working under a path listed in availableAgentsFiles, read that instruction file.",
         agentRecoveryInstruction,
+        agentRoutingInstruction,
       ].filter(Boolean).join(" ");
       const instruction = workspaceReused
         ? [
@@ -902,11 +907,13 @@ export function createMcpServer(
             "Continue with this workspaceId.",
             "Keep following the project instructions, nested instruction files, skills, agent profiles, and diagnostics already provided for this workspace.",
             agentRecoveryInstruction,
+            agentRoutingInstruction,
           ].filter(Boolean).join("\n\n")
         : workspace.mode === "worktree"
           ? [
               "Use this workspaceId for subsequent work in this isolated worktree. Keep reusing it while working in this worktree. Follow the project instructions, nested instruction files, skills, agent profiles, and diagnostics returned for it.",
               agentRecoveryInstruction,
+              agentRoutingInstruction,
             ].filter(Boolean).join(" ")
           : cardInstruction;
       const resultContent: ToolContent[] = [

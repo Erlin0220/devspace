@@ -29,6 +29,7 @@ const profile: LocalAgentProfile = {
   name: "reviewer",
   description: "Test reviewer",
   provider: "codex",
+  writeMode: "read_only",
   filePath: join(root, "reviewer.md"),
   body: "Review only.",
   disabled: false,
@@ -38,6 +39,14 @@ const disabledProfile: LocalAgentProfile = {
   name: "disabled-reviewer",
   filePath: join(root, "disabled-reviewer.md"),
   disabled: true,
+};
+const agyProfile: LocalAgentProfile = {
+  name: "agy-worker",
+  description: "Sandboxed AGY worker",
+  provider: "agy",
+  filePath: join(root, "agy-worker.md"),
+  body: "Work inside the workspace.",
+  disabled: false,
 };
 const subagents: SubagentsConfig = {
   enabled: true,
@@ -218,7 +227,7 @@ const manager = new LocalAgentManager({
   store,
   drivers: [driver, agyDriver, qoderDriver],
   pool: new LocalAgentRuntimePool(),
-  loadProfiles: async () => [profile, disabledProfile],
+  loadProfiles: async () => [profile, disabledProfile, agyProfile],
   allowedRoots: [root],
   subagents: () => currentSubagents,
 });
@@ -244,6 +253,56 @@ await assert.rejects(
   (error: unknown) => Panic.is(error) && error.cause instanceof TypeError,
 );
 await defectManager.close();
+
+const capacityStore = new LocalAgentStore(join(root, "capacity-state"));
+const capacityManager = new LocalAgentManager({
+  store: capacityStore,
+  drivers: [driver],
+  pool: new LocalAgentRuntimePool(),
+  loadProfiles: async () => [profile],
+  allowedRoots: [root],
+  subagents,
+  maxActiveTurnsPerWorkspace: 1,
+});
+const capacityIdle = unwrap(await capacityManager.start({
+  target: "reviewer",
+  prompt: "capacity idle",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+}));
+await waitFor(() => capacityStore.getById(capacityIdle.id)?.status === "idle");
+const capacityFirst = unwrap(await capacityManager.start({
+  target: "reviewer",
+  prompt: "hold capacity",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+}));
+await waitFor(() => runtimes.get(capacityFirst.id)?.inputs.length === 1);
+const capacityBlocked = await capacityManager.start({
+  target: "reviewer",
+  prompt: "second active agent",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+});
+assert.equal(capacityBlocked.isErr(), true);
+if (capacityBlocked.isErr()) {
+  assert.equal(capacityBlocked.error.code, "AGENT_CONFLICT");
+  assert.match(capacityBlocked.error.message, /limit is 1/);
+}
+const capacityContinueBlocked = await capacityManager.continue(
+  capacityIdle.id,
+  "resume while capacity is full",
+  {},
+  scope,
+);
+assert.equal(capacityContinueBlocked.isErr(), true);
+if (capacityContinueBlocked.isErr()) {
+  assert.equal(capacityContinueBlocked.error.code, "AGENT_CONFLICT");
+  assert.match(capacityContinueBlocked.error.message, /limit is 1/);
+}
+runtimes.get(capacityFirst.id)!.release();
+await waitFor(() => capacityManager.activeTurnCount === 0);
+await capacityManager.close();
 
 const outside = await manager.start({
   target: "reviewer",
@@ -324,6 +383,7 @@ assert.equal(first.status, "running");
 assert.equal(first.model, "gpt-default");
 assert.equal(first.effort, "medium");
 await waitFor(() => runtimes.get(first.id)?.inputs.length === 1);
+assert.equal(runtimes.get(first.id)?.inputs.at(-1)?.writeMode, "read_only");
 const conflict = await manager.continue(first.id, "another prompt", {}, scope);
 assert.equal(conflict.isErr(), true);
 if (conflict.isErr()) {
@@ -344,6 +404,15 @@ const agyDefault = unwrap(await manager.start({
 }));
 await waitFor(() => getRecord(agyDefault.id).status === "idle");
 assert.equal(agyRuntimes.get(agyDefault.id)?.inputs.at(-1)?.writeMode, "full_access");
+
+const agyProfileDefault = unwrap(await manager.start({
+  target: "agy-worker",
+  prompt: "profile defaults stay workspace-scoped",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+}));
+await waitFor(() => getRecord(agyProfileDefault.id).status === "idle");
+assert.equal(agyRuntimes.get(agyProfileDefault.id)?.inputs.at(-1)?.writeMode, "allowed");
 
 const agyExplicitAllowed = unwrap(await manager.start({
   target: "agy",

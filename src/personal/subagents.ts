@@ -18,6 +18,7 @@ import type {
   LocalAgentRecord,
   LocalAgentWorkspaceScope,
 } from "../local-agent-store.js";
+import { localAgentProfileWriteMode } from "../local-agent-profiles.js";
 import type { WorkspaceRegistry } from "../workspaces.js";
 
 export interface PersonalSubagentClient {
@@ -83,11 +84,11 @@ export class PersonalSubagents {
       {
         title: "Run DevSpace subagent",
         description:
-          "Start a durable DevSpace subagent execution in the current workspace using an advertised profile or enabled provider. Qoder always uses its native visible Goal TUI on Windows and defaults to mode=goal; mode=turn is unavailable for Qoder. The execution runs independently; inspect it with get_agent, use review_agent for supervisor decisions, and continue_agent for ordinary follow-up turns.",
+          "Start a durable DevSpace subagent execution in the current workspace. Prefer an advertised semantic profile over a raw provider: read_only profiles are appropriate for bounded exploration, noisy evidence gathering, and independent review; writable profiles should run only in an isolated worktree workspace. Qoder always uses its native visible Goal TUI on Windows and defaults to mode=goal; mode=turn is unavailable for Qoder. The execution runs independently; inspect it with get_agent, use review_agent for supervisor decisions, and continue_agent for ordinary follow-up turns.",
         inputSchema: {
           workspaceId: z.string().describe("Workspace identifier returned by open_workspace."),
           target: z.string().min(1).describe(
-            "Subagent profile name advertised by open_workspace.agents, or an enabled provider name when no profile fits.",
+            "Subagent profile name advertised by open_workspace.agents, including its role and writeMode, or an enabled provider name when no profile fits.",
           ),
           prompt: z.string().min(1).describe(
             "Self-contained task brief. Include the objective, relevant constraints/context, and expected result. For command-recovery delegation, describe the legitimate high-level objective instead of copying or disguising a rejected command, and do not include credentials.",
@@ -112,6 +113,17 @@ export class PersonalSubagents {
       },
       async ({ workspaceId, target, prompt, mode, goalTurns, graderCommands, requireReview, maxAttempts }) => {
         const workspace = workspaces.getWorkspace(workspaceId);
+        const profile = workspace.agentProfiles.find((candidate) => candidate.name === target);
+        const writeMode = profile ? localAgentProfileWriteMode(profile) : undefined;
+        if (profile && writeMode !== "read_only" && workspace.mode !== "worktree") {
+          return {
+            content: [{
+              type: "text" as const,
+              text: `WRITABLE_PROFILE_REQUIRES_WORKTREE: Subagent profile ${profile.name} uses writeMode=${writeMode}. Open an isolated workspace with mode=worktree and run the profile there.`,
+            }],
+            isError: true,
+          };
+        }
         const input = {
           target,
           prompt,

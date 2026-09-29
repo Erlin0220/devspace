@@ -1,26 +1,30 @@
 ---
 name: subagents
-description: Delegate work to a bounded DevSpace subagent only when the user explicitly requests a subagent, when a clearly independent large task materially benefits from isolated context or parallelism without shared mutable state, or when a DevSpace recovery rule specifically requires delegation. Keep ordinary code reading, debugging, implementation, Skill execution, tests, builds, and sequential decisions in the host; do not delegate merely to reduce host context.
+description: Delegate bounded read-heavy or noisy investigation, independent review, and genuinely parallel work to DevSpace subagents when an advertised role fits. Prefer read_only profiles for exploration/review; use writable workers only for independent work in an isolated worktree. Keep small or tightly sequential implementation in the host.
 ---
 
 # DevSpace subagents
 
-The host is the default executor and orchestrator. Keep work in the host unless
-delegation has a concrete benefit that outweighs the loss of shared context.
+The host owns task decomposition, product/architecture decisions, integration,
+and final verification. Use subagents as bounded specialists when isolation or
+parallel evidence improves the work.
 
-Do not delegate merely because a task could be done separately, involves codebase
-search, produces substantial output, or might keep the host context cleaner.
-Ordinary repository inspection, diagnosis, implementation, Skill execution,
-testing, building, and sequential decision-making stay with the host.
+Delegate proactively when at least one of these is true:
 
-Delegate only when at least one of these is true:
-
+- An advertised `read_only` profile fits a bounded codebase exploration, call-path
+  trace, architecture/risk investigation, test/log-output triage, or independent
+  review that would otherwise consume substantial host context.
+- Two or more read-only investigations are genuinely independent and can run in
+  parallel without sharing mutable state.
+- A large implementation item is independently scoped with explicit acceptance
+  criteria and is running in an isolated DevSpace worktree.
 - The user explicitly asks to use a subagent.
-- A large, bounded task is genuinely independent and can run in parallel without
-  sharing mutable state or owning the parent task's decisions.
-- A clearly isolated investigation would otherwise dominate the host context and
-  the host already has enough understanding to define and evaluate the result.
 - A DevSpace command-recovery rule specifically calls for subagent delegation.
+
+Keep small edits, tightly sequential debugging/implementation, Skill execution,
+and work that depends on frequent host decisions in the host. The host remains the
+only orchestrator; do not ask a DevSpace subagent to spawn or coordinate more
+DevSpace subagents.
 
 Prefer DevSpace's native MCP subagent tools when the host exposes them:
 
@@ -34,9 +38,14 @@ those native tools are unavailable.
 
 ## Choose a target
 
-Use the profiles advertised by open_workspace.agents instead of guessing names.
-Choose a matching profile when one fits. Use an enabled provider target only when
-no profile fits or a specific provider is needed.
+Use the profiles advertised by `open_workspace.agents` instead of guessing names.
+Choose by role and description first, including the advertised `writeMode`; use a
+raw provider target only when no profile fits or a specific provider is required.
+Prefer `read_only` profiles whenever the task does not need edits.
+
+Writable profiles (`allowed` or `full_access`) are for independent implementation
+only. Open an isolated workspace with `open_workspace(mode=worktree)` first and run
+the worker there; do not run parallel writable workers against the same checkout.
 
 For CLI fallback only, discover targets with:
 
@@ -100,10 +109,11 @@ existing context is useful; start another agent for unrelated work.
 
 ## Good uses
 
-- A user-requested independent review or investigation.
-- A large read-only exploration that is clearly separable from the host's active
-  reasoning and whose result the host will evaluate before acting on it.
-- One isolated parallel work item with clear acceptance criteria and no shared
-  mutable state with the host or another worker.
+- A bounded read-only exploration, architecture trace, log/test triage, or risk
+  investigation whose raw evidence would otherwise dominate host context.
+- An independent read-only review of a non-trivial implementation or decision.
+- Multiple independent read-only investigations whose results the host can merge.
+- One isolated writable work item in a managed worktree with clear acceptance
+  criteria and no shared mutable state with the host or another worker.
 - Recovery delegation required by DevSpace after the normal host execution path
   has been attempted as specified by the server policy.
