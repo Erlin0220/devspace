@@ -231,8 +231,17 @@ async function reconcileStoppedAttempt(home, attempt) {
       updatedAt: new Date().toISOString() }
     : { ...attempt, status: 'failed', error: 'Installer exited without committing the requested candidate',
       reconciled: true, updatedAt: new Date().toISOString() };
-  await atomicJson(attemptPath(home), value).catch(() => {});
   return value;
+}
+
+export async function reconcileInstallAttempt(home, attempt, { isInstallerRunning = installerRunning } = {}) {
+  if (!attempt || terminalInstallStates.has(attempt.status)) return attempt;
+  const queuedFor = Date.now() - Date.parse(attempt.queuedAt ?? attempt.updatedAt ?? '');
+  if (!Number.isFinite(queuedFor) || queuedFor < 5_000) return attempt;
+  let running;
+  try { running = await isInstallerRunning(home); }
+  catch { return attempt; }
+  return running ? attempt : reconcileStoppedAttempt(home, attempt);
 }
 
 async function waitForInstall(home, requestId, { timeoutMs = 35 * 60_000, cleanup = true } = {}) {
@@ -240,12 +249,7 @@ async function waitForInstall(home, requestId, { timeoutMs = 35 * 60_000, cleanu
   while (Date.now() < deadline) {
     let attempt = await readJson(attemptPath(home), null).catch(() => null);
     if (!attempt || attempt.requestId !== requestId) throw new Error('Installation attempt is no longer available');
-    if (!terminalInstallStates.has(attempt.status)) {
-      const queuedFor = Date.now() - Date.parse(attempt.queuedAt ?? attempt.updatedAt ?? '');
-      if (Number.isFinite(queuedFor) && queuedFor >= 5_000 && !await installerRunning(home)) {
-        attempt = await reconcileStoppedAttempt(home, attempt);
-      }
-    }
+    attempt = await reconcileInstallAttempt(home, attempt);
     if (terminalInstallStates.has(attempt.status)) {
       if (cleanup) {
         for (let i = 0; i < 40 && await installerRunning(home); i++) await sleep(250);

@@ -4,6 +4,7 @@ import type {
   LocalAgentWorkspaceScope,
 } from "./local-agent-store.js";
 import type {
+  AgentReviewAction,
   RunOverrides,
   StartLocalAgentInput,
 } from "./local-agent-manager.js";
@@ -14,6 +15,7 @@ export type LocalAgentDaemonMethod =
   | "hello"
   | "agent.start"
   | "agent.continue"
+  | "agent.review"
   | "agent.get"
   | "agent.list"
   | "daemon.status"
@@ -24,6 +26,7 @@ export type LocalAgentDaemonRequest =
   | AgentDaemonRequestBase<"hello", Record<string, never>>
   | AgentDaemonRequestBase<"agent.start", StartLocalAgentInput>
   | AgentDaemonRequestBase<"agent.continue", { id: string; prompt: string; scope: LocalAgentWorkspaceScope; overrides?: RunOverrides }>
+  | AgentDaemonRequestBase<"agent.review", { id: string; action: AgentReviewAction; note?: string; scope: LocalAgentWorkspaceScope }>
   | AgentDaemonRequestBase<"agent.get", { id: string; scope: LocalAgentWorkspaceScope }>
   | AgentDaemonRequestBase<"agent.list", LocalAgentWorkspaceScope>
   | AgentDaemonRequestBase<"daemon.status", Record<string, never>>
@@ -114,6 +117,14 @@ export function decodeLocalAgentDaemonRequest(value: unknown): LocalAgentDaemonR
         method,
         params: decodeContinueInput(params),
       } as LocalAgentDaemonRequest;
+    case "agent.review":
+      return {
+        requestId,
+        protocolVersion,
+        authToken,
+        method,
+        params: decodeReviewInput(params),
+      } as LocalAgentDaemonRequest;
     case "agent.get":
       return {
         requestId,
@@ -184,6 +195,9 @@ export function decodeAgentRecord(value: unknown): LocalAgentRecord {
     workspaceRoot: requiredString(record?.workspaceRoot, "workspaceRoot"),
     profileName: requiredString(record?.profileName, "profileName"),
     provider: requiredString(record?.provider, "provider"),
+    executionOwner: optionalString(record?.executionOwner),
+    workspaceMode: decodeWorkspaceMode(record?.workspaceMode),
+    writeMode: decodeWriteMode(record?.writeMode),
     model: optionalString(record?.model),
     effort: optionalString(record?.effort),
     providerSessionId: optionalString(record?.providerSessionId),
@@ -269,6 +283,20 @@ function decodeContinueInput(value: unknown): { id: string; prompt: string; scop
   };
 }
 
+function decodeReviewInput(value: unknown): { id: string; action: AgentReviewAction; note?: string; scope: LocalAgentWorkspaceScope } {
+  const record = asRecord(value);
+  const action = requiredString(record?.action, "action");
+  if (action !== "approve" && action !== "retry" && action !== "reject") {
+    throw new LocalAgentDaemonProtocolError("INVALID_PARAMS", "Invalid review action.");
+  }
+  return {
+    id: requiredString(record?.id, "id"),
+    action,
+    note: optionalContentString(record?.note),
+    scope: decodeWorkspaceScope(record?.scope),
+  };
+}
+
 function decodeWorkspaceScope(value: unknown): LocalAgentWorkspaceScope {
   const record = asRecord(value);
   if (!record) throw new LocalAgentDaemonProtocolError("INVALID_PARAMS", "Workspace scope is required.");
@@ -298,6 +326,12 @@ function decodeWriteMode(value: unknown): LocalAgentWriteMode | undefined {
   if (value === undefined) return undefined;
   if (value === "read_only" || value === "allowed" || value === "full_access") return value;
   throw new LocalAgentDaemonProtocolError("INVALID_PARAMS", "Invalid write mode.");
+}
+
+function decodeWorkspaceMode(value: unknown): "checkout" | "worktree" | undefined {
+  if (value === undefined) return undefined;
+  if (value === "checkout" || value === "worktree") return value;
+  throw new LocalAgentDaemonProtocolError("INVALID_PARAMS", "Invalid workspace mode.");
 }
 
 function isLocalAgentStatus(value: string): value is LocalAgentStatus {

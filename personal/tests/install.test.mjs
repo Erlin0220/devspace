@@ -5,7 +5,7 @@ import { access, mkdtemp, mkdir, rm, readFile, utimes, writeFile } from 'node:fs
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
-import { activateCandidate } from '../install.mjs';
+import { activateCandidate, reconcileInstallAttempt } from '../install.mjs';
 import { importLegacy } from '../legacy-import.mjs';
 import { collectGarbage } from '../gc.mjs';
 import { atomicJson, secureStateDirectory } from '../state.mjs';
@@ -68,6 +68,37 @@ test('installer force switch has no runtime-activity gate', async () => {
   assert.doesNotMatch(source, /runningProcesses|activeAgentTurns|runtimeSnapshot|stopAgentDaemon/);
   assert.match(source, /stopCliAgentDaemon\(home\)/);
   assert.match(source, /stopOwn\(home\)/);
+});
+test('stale install progress reconciles from the committed candidate after the installer exits', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'personal-install-reconcile-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const packageRoot = join(home, 'apps', 'candidate');
+  const candidateHead = 'a'.repeat(40), payloadSha256 = 'b'.repeat(64);
+  await atomicJson(join(packageRoot, '.personal-install.json'), {
+    schema: 1,
+    owner: 'personal-devspace',
+    candidateHead,
+    payload: { sha256: payloadSha256 },
+  });
+  await atomicJson(join(home, 'install.json'), { schema: 1, owner: 'personal-devspace', packageRoot });
+  const attempt = {
+    schema: 1,
+    requestId: 'stale',
+    candidateHead,
+    payloadSha256,
+    status: 'staging',
+    queuedAt: new Date(Date.now() - 10_000).toISOString(),
+    updatedAt: new Date(Date.now() - 10_000).toISOString(),
+  };
+  await atomicJson(join(home, 'install-attempt.json'), attempt);
+  const running = await reconcileInstallAttempt(home, attempt, { isInstallerRunning: async () => true });
+  assert.equal(running.status, 'staging');
+  const reconciled = await reconcileInstallAttempt(home, attempt, { isInstallerRunning: async () => false });
+  assert.equal(reconciled.status, 'installed');
+  assert.equal(reconciled.reconciled, true);
+  assert.equal(resolve(reconciled.packageRoot), resolve(packageRoot));
+  assert.equal(JSON.parse(await readFile(join(home, 'install-attempt.json'), 'utf8')).status, 'staging',
+    'status reconciliation is a read projection; only the installer/request lifecycle writes the attempt record');
 });
 test('Windows fresh state root is secured before any child state exists', { skip: process.platform !== 'win32' }, async t => {
   const parent = await mkdtemp(join(tmpdir(), 'personal-acl-fresh-')); t.after(() => rm(parent, { recursive: true, force: true }));

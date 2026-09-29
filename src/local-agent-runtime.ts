@@ -89,6 +89,13 @@ export interface LocalAgentDriver {
   readonly provider: LocalAgentProvider;
   runtimeKey(context: LocalAgentRuntimeContext): string;
   createRuntime(context: LocalAgentRuntimeContext): Promise<Result<LocalAgentRuntime, AgentProviderError>>;
+  cleanupInterruptedProcess?(input: {
+    agentId: string;
+    processId: number;
+    workspaceRoot: string;
+    executionOwner?: string;
+    providerSessionId?: string;
+  }): void;
   readonly idleTimeoutMs?: number;
   readonly reuseRuntime?: boolean;
 }

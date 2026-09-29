@@ -181,6 +181,14 @@ it is a separate explicit human action: the exact `candidateHead` is persisted
 as the approved head before the OS installer is queued, so approval cannot silently
 float to another revision.
 
+`sourceRoot` is the explicit Personal source checkout used by update preparation.
+An explicit `devspace-personal install <path>` binds it after validating that the
+path is the top level of a Git checkout for `@waishnav/devspace` and contains the
+Personal upstream baseline. Older installations that predate this field can bind
+the same checkout once from Control Center → 本机设置 → Personal 源码目录; update
+preparation fails closed until that binding exists. Installed package directories
+are not accepted as substitutes for a source checkout.
+
 ## One-time historical import
 
 `node personal/bin.mjs migrate` is an explicit local-only migration, not a runtime

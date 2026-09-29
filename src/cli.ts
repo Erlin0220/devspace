@@ -24,6 +24,7 @@ import {
   parseLocalAgentRunArgs,
 } from "./local-agent-targets.js";
 import { createLocalAgentClient } from "./local-agent-client.js";
+import type { AgentReviewAction } from "./local-agent-manager.js";
 import { toAgentErrorPayload, type LocalAgentError } from "./local-agent-errors.js";
 import {
   formatAgentObservation,
@@ -391,6 +392,7 @@ function printHelp(): void {
       "  devspace agents ls       List subagent sessions",
       "  devspace agents run <profile-or-provider> [--model <model>] [--effort <level>] <prompt>",
       "  devspace agents continue <id> [--model <model>] [--effort <level>] <prompt>",
+      "  devspace agents review <id> <approve|retry|reject> [note]",
       "  devspace agents show <id>",
       "  devspace agents daemon <status|stop|logs>",
       "  devspace -v, --version   Print the installed version",
@@ -414,6 +416,9 @@ async function runAgentsCommand(args: string[]): Promise<void> {
       return;
     case "continue":
       await runAgentsContinue(commandArgs, json);
+      return;
+    case "review":
+      await runAgentsReview(commandArgs, json);
       return;
     case "show":
       await runAgentsShow(commandArgs, json);
@@ -495,6 +500,27 @@ async function runAgentsRun(args: string[], json: boolean): Promise<void> {
     return;
   }
   console.log(formatAgentReceipt(receipt));
+}
+
+async function runAgentsReview(args: string[], json: boolean): Promise<void> {
+  const [agentId, action, ...noteParts] = args;
+  if (!agentId || !["approve", "retry", "reject"].includes(action ?? "")) {
+    throw new Error("Usage: devspace agents review <id> <approve|retry|reject> [note] [--json]");
+  }
+  const config = loadConfig();
+  const client = createLocalAgentClient(config);
+  const scope = resolveCliWorkspaceContext(config.allowedRoots);
+  const result = await client.review(
+    agentId,
+    action as AgentReviewAction,
+    noteParts.join(" ").trim() || undefined,
+    scope,
+  );
+  const record = presentAgentResult(result, json);
+  if (!record) return;
+  const receipt = presentAgentReceipt(record);
+  if (json) printJson(receipt);
+  else console.log(formatAgentReceipt(receipt));
 }
 
 async function runAgentsContinue(args: string[], json: boolean): Promise<void> {
@@ -620,6 +646,7 @@ function printAgentsHelp(): void {
       "  devspace agents ls [--json]",
       "  devspace agents run <profile-or-provider> [--model <model>] [--effort <level>] [--json] <prompt>",
       "  devspace agents continue <id> [--model <model>] [--effort <level>] [--json] <prompt>",
+      "  devspace agents review <id> <approve|retry|reject> [note] [--json]",
       "  devspace agents show <id> [--json]",
       "  devspace agents targets [--json]",
       "  devspace agents daemon <status|stop|logs> [--json]",

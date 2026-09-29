@@ -3,10 +3,12 @@ import { resolve } from "node:path";
 import { Result, type Result as BetterResult } from "better-result";
 import { openDatabase, type DatabaseHandle } from "./db/client.js";
 import { AgentStoreError, isProgrammerDefect } from "./local-agent-errors.js";
-import type { LocalAgentExecutionMode } from "./local-agent-runtime.js";
+import type { LocalAgentExecutionMode, LocalAgentWriteMode } from "./local-agent-runtime.js";
 
 export type LocalAgentStatus = "starting" | "running" | "awaiting_review" | "idle" | "error" | "stopped";
 export type LocalAgentReviewStatus = "not_required" | "pending" | "approved" | "rejected";
+export type LocalAgentWorkspaceMode = "checkout" | "worktree";
+export type LocalAgentRunClaimResult = "claimed" | "capacity" | "state_changed";
 
 export interface LocalAgentGraderResult {
   command: string;
@@ -24,6 +26,9 @@ export interface LocalAgentRecord {
   model?: string;
   effort?: string;
   providerSessionId?: string;
+  executionOwner?: string;
+  workspaceMode?: LocalAgentWorkspaceMode;
+  writeMode?: LocalAgentWriteMode;
   executionMode?: LocalAgentExecutionMode;
   goalTurns?: number;
   requireReview?: boolean;
@@ -48,6 +53,9 @@ export interface CreateLocalAgentRecordInput {
   workspaceRoot: string;
   profileName: string;
   provider: string;
+  executionOwner?: string;
+  workspaceMode?: LocalAgentWorkspaceMode;
+  writeMode?: LocalAgentWriteMode;
   model?: string;
   effort?: string;
   executionMode?: LocalAgentExecutionMode;
@@ -76,6 +84,9 @@ interface LocalAgentRow {
   model: string | null;
   effort: string | null;
   provider_session_id: string | null;
+  execution_owner: string | null;
+  workspace_mode: string | null;
+  write_mode: string | null;
   execution_mode: string | null;
   goal_turns: number | null;
   require_review: string | null;
@@ -152,6 +163,9 @@ export class LocalAgentStore {
       provider: input.provider,
       model: input.model,
       effort: input.effort,
+      executionOwner: input.executionOwner ?? "local",
+      workspaceMode: input.workspaceMode ?? "checkout",
+      writeMode: input.writeMode,
       executionMode: input.executionMode ?? "turn",
       goalTurns: input.goalTurns,
       requireReview,
@@ -175,6 +189,9 @@ export class LocalAgentStore {
           provider,
           model,
           effort,
+          execution_owner,
+          workspace_mode,
+          write_mode,
           execution_mode,
           goal_turns,
           require_review,
@@ -186,7 +203,7 @@ export class LocalAgentStore {
           status,
           created_at,
           updated_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         record.id,
@@ -196,6 +213,9 @@ export class LocalAgentStore {
         record.provider,
         record.model ?? null,
         record.effort ?? null,
+        record.executionOwner ?? "local",
+        record.workspaceMode ?? "checkout",
+        record.writeMode ?? null,
         record.executionMode,
         record.goalTurns ?? null,
         String(record.requireReview),
@@ -214,6 +234,26 @@ export class LocalAgentStore {
 
   createResult(input: CreateLocalAgentRecordInput): BetterResult<LocalAgentRecord, AgentStoreError> {
     return storeResult("create", () => this.create(input));
+  }
+
+  createWithCapacity(
+    input: CreateLocalAgentRecordInput,
+    maxActive: number,
+  ): LocalAgentRecord | undefined {
+    const create = this.database.sqlite.transaction(() => {
+      if (this.activeCount({ workspaceId: input.workspaceId, workspaceRoot: input.workspaceRoot }) >= maxActive) {
+        return undefined;
+      }
+      return this.create(input);
+    });
+    return create.immediate();
+  }
+
+  createWithCapacityResult(
+    input: CreateLocalAgentRecordInput,
+    maxActive: number,
+  ): BetterResult<LocalAgentRecord | undefined, AgentStoreError> {
+    return storeResult("create_with_capacity", () => this.createWithCapacity(input, maxActive));
   }
 
   getById(id: string): LocalAgentRecord | undefined {
@@ -259,6 +299,9 @@ export class LocalAgentStore {
           model = ?,
           effort = ?,
           provider_session_id = ?,
+          execution_owner = ?,
+          workspace_mode = ?,
+          write_mode = ?,
           execution_mode = ?,
           goal_turns = ?,
           require_review = ?,
@@ -285,6 +328,9 @@ export class LocalAgentStore {
         updated.model ?? null,
         updated.effort ?? null,
         updated.providerSessionId ?? null,
+        updated.executionOwner ?? "local",
+        updated.workspaceMode ?? "checkout",
+        updated.writeMode ?? null,
         updated.executionMode,
         updated.goalTurns ?? null,
         String(updated.requireReview),
@@ -314,27 +360,157 @@ export class LocalAgentStore {
     return storeResult("update", () => this.update(id, patch));
   }
 
-  reconcileActiveRuns(message = "DevSpace restarted while this agent execution was running."): number {
+  activeRuns(executionOwner: string): LocalAgentRecord[] {
+    const rows = this.database.sqlite
+      .prepare(
+        `select * from local_agent_sessions
+         where execution_owner = ? and status in ('starting', 'running')
+         order by updated_at desc`,
+      )
+      .all(executionOwner) as LocalAgentRow[];
+    return rows.map(rowToLocalAgentRecord);
+  }
+
+  activeRunsResult(executionOwner: string): BetterResult<LocalAgentRecord[], AgentStoreError> {
+    return storeResult("list_active_runs", () => this.activeRuns(executionOwner));
+  }
+
+  claimActiveRuns(fromOwner: string, toOwner: string): LocalAgentRecord[] {
+    const claim = this.database.sqlite.transaction(() => {
+      const rows = this.database.sqlite
+        .prepare(
+          `select * from local_agent_sessions
+           where execution_owner = ? and status in ('starting', 'running')
+           order by updated_at desc`,
+        )
+        .all(fromOwner) as LocalAgentRow[];
+      if (rows.length === 0) return [];
+      const now = new Date().toISOString();
+      const update = this.database.sqlite.prepare(
+        `update local_agent_sessions
+         set execution_owner = ?, updated_at = ?
+         where id = ? and execution_owner = ? and status in ('starting', 'running')`,
+      );
+      const claimed: LocalAgentRecord[] = [];
+      for (const row of rows) {
+        const result = update.run(toOwner, now, row.id, fromOwner);
+        if (Number(result.changes) === 1) {
+          claimed.push({ ...rowToLocalAgentRecord(row), executionOwner: toOwner, updatedAt: now });
+        }
+      }
+      return claimed;
+    });
+    return claim.immediate();
+  }
+
+  claimActiveRunsResult(
+    fromOwner: string,
+    toOwner: string,
+  ): BetterResult<LocalAgentRecord[], AgentStoreError> {
+    return storeResult("claim_active_runs", () => this.claimActiveRuns(fromOwner, toOwner));
+  }
+
+  claimRun(id: string, expectedStatus: LocalAgentStatus, executionOwner: string): boolean {
+    const now = new Date().toISOString();
+    const result = this.database.sqlite
+      .prepare(
+        `update local_agent_sessions
+         set status = 'running', execution_owner = ?, updated_at = ?
+         where id = ? and status = ?`,
+      )
+      .run(executionOwner, now, id, expectedStatus);
+    return Number(result.changes) === 1;
+  }
+
+  claimRunResult(
+    id: string,
+    expectedStatus: LocalAgentStatus,
+    executionOwner: string,
+  ): BetterResult<boolean, AgentStoreError> {
+    return storeResult("claim_run", () => this.claimRun(id, expectedStatus, executionOwner));
+  }
+
+  claimRunWithCapacity(
+    id: string,
+    expectedStatus: LocalAgentStatus,
+    executionOwner: string,
+    maxActive: number,
+  ): LocalAgentRunClaimResult {
+    const claim = this.database.sqlite.transaction(() => {
+      const current = this.getById(id);
+      if (!current || current.status !== expectedStatus) return "state_changed" as const;
+      if (this.activeCount({ workspaceId: current.workspaceId, workspaceRoot: current.workspaceRoot }) >= maxActive) {
+        return "capacity" as const;
+      }
+      return this.claimRun(id, expectedStatus, executionOwner) ? "claimed" as const : "state_changed" as const;
+    });
+    return claim.immediate();
+  }
+
+  claimRunWithCapacityResult(
+    id: string,
+    expectedStatus: LocalAgentStatus,
+    executionOwner: string,
+    maxActive: number,
+  ): BetterResult<LocalAgentRunClaimResult, AgentStoreError> {
+    return storeResult(
+      "claim_run_with_capacity",
+      () => this.claimRunWithCapacity(id, expectedStatus, executionOwner, maxActive),
+    );
+  }
+
+  updateIfStatus(
+    id: string,
+    expectedStatus: LocalAgentStatus,
+    patch: Partial<Omit<LocalAgentRecord, "id" | "createdAt">>,
+  ): LocalAgentRecord | undefined {
+    const transition = this.database.sqlite.transaction(() => {
+      const current = this.getById(id);
+      if (!current || current.status !== expectedStatus) return undefined;
+      return this.update(id, patch);
+    });
+    return transition.immediate();
+  }
+
+  updateIfStatusResult(
+    id: string,
+    expectedStatus: LocalAgentStatus,
+    patch: Partial<Omit<LocalAgentRecord, "id" | "createdAt">>,
+  ): BetterResult<LocalAgentRecord | undefined, AgentStoreError> {
+    return storeResult("update_if_status", () => this.updateIfStatus(id, expectedStatus, patch));
+  }
+
+  reconcileActiveRuns(
+    executionOwner: string,
+    message = "DevSpace restarted while this agent execution was running.",
+  ): number {
     const now = new Date().toISOString();
     const result = this.database.sqlite
       .prepare(
         `update local_agent_sessions
          set status = 'error', error = ?, error_code = 'AGENT_EXECUTION_INTERRUPTED', error_retryable = 'true',
              process_id = null, updated_at = ?
-         where status in ('starting', 'running')`,
+         where execution_owner = ? and status in ('starting', 'running')`,
       )
-      .run(message, now);
+      .run(message, now, executionOwner);
     return Number(result.changes);
   }
 
   reconcileActiveRunsResult(
+    executionOwner: string,
     message = "DevSpace restarted while this agent execution was running.",
   ): BetterResult<number, AgentStoreError> {
-    return storeResult("reconcile_active_runs", () => this.reconcileActiveRuns(message));
+    return storeResult("reconcile_active_runs", () => this.reconcileActiveRuns(executionOwner, message));
   }
 
   close(): void {
     this.database.close();
+  }
+
+  private activeCount(scope: LocalAgentListScope): number {
+    return this.list(scope).filter(
+      (record) => record.status === "starting" || record.status === "running",
+    ).length;
   }
 
 }
@@ -353,6 +529,9 @@ function rowToLocalAgentRecord(row: LocalAgentRow): LocalAgentRecord {
     model: row.model ?? undefined,
     effort: row.effort ?? undefined,
     providerSessionId: row.provider_session_id ?? undefined,
+    executionOwner: row.execution_owner ?? undefined,
+    workspaceMode: readWorkspaceMode(row.workspace_mode),
+    writeMode: readWriteMode(row.write_mode),
     executionMode: readExecutionMode(row.execution_mode),
     goalTurns: row.goal_turns ?? undefined,
     requireReview: readOptionalBoolean(row.require_review) ?? false,
@@ -381,6 +560,15 @@ function readOptionalBoolean(value: string | null): boolean | undefined {
 
 function readExecutionMode(value: string | null): LocalAgentExecutionMode {
   return value === "goal" ? "goal" : "turn";
+}
+
+function readWorkspaceMode(value: string | null): LocalAgentWorkspaceMode {
+  return value === "worktree" ? "worktree" : "checkout";
+}
+
+function readWriteMode(value: string | null): LocalAgentWriteMode | undefined {
+  if (value === "read_only" || value === "allowed" || value === "full_access") return value;
+  return undefined;
 }
 
 function readReviewStatus(value: string | null): LocalAgentReviewStatus {

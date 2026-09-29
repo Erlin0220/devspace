@@ -15,7 +15,7 @@ const assets = {
   '/personal-devspace-logo.png': ['../assets/personal-devspace-logo.png', 'image/png'],
   '/favicon.ico': ['../assets/personal-devspace.ico', 'image/x-icon'],
 };
-const actions = new Set(['check', 'suspend', 'resume', 'restart', 'repair', 'project-root', 'choose-folder', 'logs', 'update-check', 'update-prepare', 'update-apply']);
+const actions = new Set(['check', 'suspend', 'resume', 'restart', 'repair', 'project-root', 'choose-folder', 'source-root', 'choose-source-folder', 'logs', 'update-check', 'update-prepare', 'update-apply']);
 const failure = (message, status = 400) => Object.assign(new Error(message), { status });
 
 async function readBody(request) {
@@ -65,16 +65,19 @@ export async function startLocalControl(controller, { home = stateHome(), prefer
       if (request.method !== 'POST' || request.url !== '/api/action') throw failure('未找到操作', 404);
       if (request.headers.origin !== origin || !/^application\/json(?:;|$)/i.test(request.headers['content-type'] ?? '')) throw failure('只接受同源 JSON 操作', 403);
       const body = await readBody(request);
-      if (!body || typeof body !== 'object' || Array.isArray(body) || !actions.has(body.action) || Object.keys(body).some(key => !['action', 'projectRoot'].includes(key))) throw failure('未知控制操作');
+      if (!body || typeof body !== 'object' || Array.isArray(body) || !actions.has(body.action) || Object.keys(body).some(key => !['action', 'projectRoot', 'sourceRoot'].includes(key))) throw failure('未知控制操作');
       if (body.action === 'project-root' && (typeof body.projectRoot !== 'string' || !body.projectRoot.trim() || body.projectRoot.length > 4096 || /[\r\n\0]/.test(body.projectRoot))) throw failure('项目目录无效');
+      if (body.action === 'source-root' && (typeof body.sourceRoot !== 'string' || !body.sourceRoot.trim() || body.sourceRoot.length > 4096 || /[\r\n\0]/.test(body.sourceRoot))) throw failure('源码目录无效');
       if (['update-prepare', 'update-apply'].includes(body.action)) {
         if (controller.snapshot().busy) throw failure('已有操作正在进行', 409);
         // Acknowledge before lengthy Git/tests/install. Progress and the final error live in the controller.
         void controller.dispatch(body.action).catch(() => {});
         return send(202, { accepted: true });
       }
-      const result = await controller.dispatch(body.action, { projectRoot: body.projectRoot });
-      return send(200, { ok: true, ...(body.action === 'choose-folder' ? { projectRoot: result } : {}) });
+      const result = await controller.dispatch(body.action, { projectRoot: body.projectRoot, sourceRoot: body.sourceRoot });
+      return send(200, { ok: true,
+        ...(body.action === 'choose-folder' ? { projectRoot: result } : {}),
+        ...(body.action === 'choose-source-folder' ? { sourceRoot: result } : {}) });
     } catch (error) { send([400, 401, 403, 404, 409, 413].includes(error.status) ? error.status : 500, { error: error.message }); }
   });
   server.requestTimeout = 15000; server.headersTimeout = 10000; server.on('clientError', (_error, socket) => socket.destroy());

@@ -31,6 +31,7 @@ const require = createRequire(import.meta.url);
 const crossSpawn = require("cross-spawn") as typeof import("node:child_process").spawn & {
   sync: typeof import("node:child_process").spawnSync;
 };
+const agyCompatibilityCache = new Map<string, boolean>();
 
 export interface ResolvedAgyCommand {
   executable: string;
@@ -57,6 +58,8 @@ export function agyCommandEnvironment(env: NodeJS.ProcessEnv = process.env): Nod
 export function resolveAgyCommand(env: NodeJS.ProcessEnv = process.env): ResolvedAgyCommand | undefined {
   const executable = resolveExecutable(env.AGY_COMMAND ?? "agy", env);
   if (!executable) return undefined;
+  const cached = agyCompatibilityCache.get(executable);
+  if (cached !== undefined) return cached ? { executable } : undefined;
   const helpResult = crossSpawn.sync(executable, ["--help"], {
     encoding: "utf8",
     env,
@@ -64,15 +67,20 @@ export function resolveAgyCommand(env: NodeJS.ProcessEnv = process.env): Resolve
     timeout: 5_000,
     shell: false,
   });
-  if (helpResult.error || helpResult.status !== 0) return undefined;
+  if (helpResult.error || helpResult.status !== 0) {
+    agyCompatibilityCache.set(executable, false);
+    return undefined;
+  }
   const help = `${helpResult.stdout ?? ""}\n${helpResult.stderr ?? ""}`;
   if (
     !help.includes("--input-format")
     || !help.includes("--output-format")
     || !help.includes("--conversation")
   ) {
+    agyCompatibilityCache.set(executable, false);
     return undefined;
   }
+  agyCompatibilityCache.set(executable, true);
   return { executable };
 }
 

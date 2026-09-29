@@ -1,7 +1,11 @@
 import { homedir } from 'node:os';
+import { execFile } from 'node:child_process';
 import { isAbsolute, join, resolve } from 'node:path';
-import { realpath, stat } from 'node:fs/promises';
-import { readJson, stateHome, statePath } from './state.mjs';
+import { readFile, realpath, stat } from 'node:fs/promises';
+import { promisify } from 'node:util';
+import { atomicJson, readJson, stateHome, statePath } from './state.mjs';
+
+const exec = promisify(execFile);
 
 export async function readPersonalConfig(home = stateHome()) {
   const value = await readJson(statePath(home, 'personal'), { schema: 1 });
@@ -24,6 +28,14 @@ export async function readPersonalAuth(home = stateHome(), env = process.env) {
   if (apiToken !== undefined && (typeof apiToken !== 'string' || !/^[\x21-\x7e]{32,4096}$/.test(apiToken))) throw new Error('Invalid Personal API Token');
   return { apiToken };
 }
+export async function bindPersonalSourceRoot(home = stateHome(), sourceRoot) {
+  sourceRoot = await approvedPersonalSourceRoot(sourceRoot);
+  const value = await readJson(statePath(home, 'personal'), { schema: 1 });
+  if (value?.schema !== 1) throw new Error('Invalid Personal configuration');
+  const next = { ...value, schema: 1, sourceRoot };
+  await atomicJson(statePath(home, 'personal'), next);
+  return next.sourceRoot;
+}
 export function runtimeEnvironment(config, env = process.env) {
   const result = { ...env, DEVSPACE_TOOL_MODE: 'codex', DEVSPACE_WIDGETS: 'off', DEVSPACE_CONFIG_DIR: config.runtimeConfigDir };
   if (config.projectRoot) result.DEVSPACE_ALLOWED_ROOTS = config.projectRoot;
@@ -33,5 +45,26 @@ export async function approvedProjectRoot(value) {
   if (typeof value !== 'string' || !isAbsolute(value) || /[\r\n\0]/.test(value)) throw new Error('Choose an absolute project directory');
   const root = await realpath(resolve(value));
   if (!(await stat(root)).isDirectory()) throw new Error('Choose a project directory');
+  return root;
+}
+export async function approvedPersonalSourceRoot(value) {
+  const root = await approvedProjectRoot(value);
+  let gitRoot;
+  try {
+    gitRoot = (await exec('git', ['rev-parse', '--show-toplevel'], {
+      cwd: root,
+      windowsHide: true,
+      timeout: 15_000,
+    })).stdout.trim();
+  } catch {
+    throw new Error('请选择 Personal DevSpace Git checkout');
+  }
+  if (await realpath(resolve(gitRoot)) !== root) throw new Error('请选择 Personal DevSpace Git checkout 的顶层目录');
+  let pkg;
+  try { pkg = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')); }
+  catch { throw new Error('请选择 Personal DevSpace Git checkout'); }
+  if (pkg?.name !== '@waishnav/devspace') throw new Error('请选择 Personal DevSpace Git checkout');
+  try { await readFile(join(root, 'personal', 'upstream.json'), 'utf8'); }
+  catch { throw new Error('所选目录缺少 personal/upstream.json；不是可升级的 Personal DevSpace 源码 checkout'); }
   return root;
 }

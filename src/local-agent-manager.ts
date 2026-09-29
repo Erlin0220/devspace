@@ -17,12 +17,14 @@ import {
   localAgentProfileWriteMode,
 } from "./local-agent-profiles.js";
 import {
+  type LocalAgentTarget,
   resolveLocalAgentTarget,
 } from "./local-agent-targets.js";
 import {
   type LocalAgentRecord,
   type LocalAgentGraderResult,
   type LocalAgentStore,
+  type LocalAgentWorkspaceMode,
   type LocalAgentWorkspaceScope,
 } from "./local-agent-store.js";
 import {
@@ -38,6 +40,7 @@ import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
 import { resolveShellCommand, terminateProcessTree } from "./process-platform.js";
 import { HeadTailBuffer } from "./process-sessions.js";
 import { assertAllowedPath } from "./roots.js";
+import { detectWorkspaceMode } from "./workspace-mode.js";
 import {
   isSubagentProviderEnabled,
   type SubagentsConfig,
@@ -65,6 +68,7 @@ export interface RunOverrides {
 }
 
 export type AgentReviewAction = "approve" | "retry" | "reject";
+export const DEFAULT_MAX_ACTIVE_SUBAGENTS_PER_WORKSPACE = 3;
 
 export interface LocalAgentManagerLogger {
   (level: "info" | "warn" | "error", event: string, fields: Record<string, unknown>): void;
@@ -80,6 +84,8 @@ export interface LocalAgentManagerOptions {
   logger?: LocalAgentManagerLogger;
   subagents: SubagentsConfig | (() => SubagentsConfig);
   maxActiveTurnsPerWorkspace?: number;
+  executionOwner?: string;
+  requireWorktreeForWritable?: boolean;
 }
 
 export type AgentStartError = AgentTargetError | AgentScopeError | AgentConflictError | AgentStoreError;
@@ -102,6 +108,8 @@ export class LocalAgentManager {
   private readonly logger?: LocalAgentManagerLogger;
   private readonly resolveSubagents: () => SubagentsConfig;
   private readonly maxActiveTurnsPerWorkspace?: number;
+  private readonly executionOwner: string;
+  private readonly requireWorktreeForWritable: boolean;
   private readonly activeTurns = new Map<string, Promise<void>>();
   private readonly stopGraders = new Set<() => void>();
   private accepting = true;
@@ -116,12 +124,41 @@ export class LocalAgentManager {
     this.allowedRoots = options.allowedRoots;
     this.logger = options.logger;
     this.maxActiveTurnsPerWorkspace = options.maxActiveTurnsPerWorkspace;
+    this.executionOwner = options.executionOwner ?? "local";
+    this.requireWorktreeForWritable = options.requireWorktreeForWritable ?? false;
     const subagents = options.subagents;
     this.resolveSubagents = typeof subagents === "function" ? subagents : () => subagents;
   }
 
   reconcileActiveRuns(message?: string): BetterResult<number, AgentStoreError> {
-    return this.store.reconcileActiveRunsResult(message);
+    const active = this.store.activeRunsResult(this.executionOwner);
+    if (active.isErr()) return active;
+    const cleaned = this.cleanupInterruptedRecords(active.value);
+    if (cleaned.isErr()) return cleaned;
+    return this.store.reconcileActiveRunsResult(this.executionOwner, message);
+  }
+
+  reconcileLegacyActiveRuns(
+    message = "DevSpace upgraded while this legacy agent execution was running.",
+  ): BetterResult<number, AgentStoreError> {
+    const recoveryOwner = `legacy:${this.executionOwner}`;
+    const claimed = this.store.claimActiveRunsResult("legacy", recoveryOwner);
+    if (claimed.isErr()) return claimed;
+    const pending = this.store.activeRunsResult(recoveryOwner);
+    if (pending.isErr()) return pending;
+    const cleaned = this.cleanupInterruptedRecords(pending.value, "legacy");
+    if (cleaned.isErr()) return cleaned;
+    for (const record of pending.value) {
+      const updated = this.store.updateResult(record.id, {
+        status: "error",
+        processId: undefined,
+        error: message,
+        errorCode: "AGENT_EXECUTION_INTERRUPTED",
+        errorRetryable: true,
+      });
+      if (updated.isErr()) return updated;
+    }
+    return Result.ok(pending.value.length);
   }
 
   async start(input: StartLocalAgentInput): Promise<BetterResult<LocalAgentRecord, AgentStartError>> {
@@ -182,12 +219,32 @@ export class LocalAgentManager {
           message: "Goal execution is currently provided by Qoder's native Goal mode.",
         }));
       }
-      yield* manager.workspaceCapacityResult(workspaceRoot, input.workspaceId, "start");
-      const record = yield* manager.store.createResult({
+      const writeMode = yield* manager.startWriteModeResult(target, input.writeMode);
+      const workspaceMode = detectWorkspaceMode(workspaceRoot);
+      yield* manager.writableWorkspaceResult(
+        writeMode,
+        workspaceMode,
+        target.name,
+        "start",
+      );
+      if (writeMode === "read_only" && (input.graderCommands?.length ?? 0) > 0) {
+        return Result.err(new AgentTargetError({
+          code: "PROVIDER_NOT_CONFIGURED",
+          target: target.name,
+          provider: target.provider,
+          operation: "configure_graders",
+          retryable: false,
+          message: "Read-only subagents cannot execute shell grader commands.",
+        }));
+      }
+      const createInput = {
         workspaceId: input.workspaceId,
         workspaceRoot,
         profileName: target.name,
         provider: target.provider,
+        executionOwner: manager.executionOwner,
+        workspaceMode,
+        writeMode,
         model: target.model,
         effort: target.effort,
         executionMode,
@@ -195,11 +252,15 @@ export class LocalAgentManager {
         requireReview: input.requireReview,
         maxAttempts: input.maxAttempts,
         graderCommands: input.graderCommands,
-      });
+      };
+      const record = manager.maxActiveTurnsPerWorkspace === undefined
+        ? yield* manager.store.createResult(createInput)
+        : yield* manager.store.createWithCapacityResult(createInput, manager.maxActiveTurnsPerWorkspace);
+      if (!record) return Result.err(manager.workspaceCapacityConflict("start"));
       return manager.begin(record, input.prompt, {
         model: target.model,
         effort: target.effort,
-        writeMode: input.writeMode,
+        writeMode,
       }, input.workspaceId);
     });
   }
@@ -236,7 +297,25 @@ export class LocalAgentManager {
         }));
       }
       const profiles = yield* Result.await(manager.loadProfilesResult(record.workspaceRoot, record.profileName));
-      yield* manager.profileForRecordResult(record, profiles);
+      const profile = yield* manager.profileForRecordResult(record, profiles);
+      const writeMode = yield* manager.recordWriteModeResult(record, profile, overrides.writeMode);
+      const workspaceMode = detectWorkspaceMode(record.workspaceRoot);
+      yield* manager.writableWorkspaceResult(
+        writeMode,
+        workspaceMode,
+        record.profileName,
+        "continue",
+      );
+      if (writeMode === "read_only" && (record.graderCommands?.length ?? 0) > 0) {
+        return Result.err(new AgentTargetError({
+          code: "PROVIDER_NOT_CONFIGURED",
+          target: record.profileName,
+          provider: isLocalAgentProvider(record.provider) ? record.provider : undefined,
+          operation: "configure_graders",
+          retryable: false,
+          message: "Read-only subagents cannot execute shell grader commands.",
+        }));
+      }
       yield* manager.providerEnabledResult(
         record.provider,
         record.profileName,
@@ -244,8 +323,13 @@ export class LocalAgentManager {
         manager.resolveSubagents(),
       );
       yield* manager.driverResult(record.provider, "continue", agentId);
-      yield* manager.workspaceCapacityResult(record.workspaceRoot, scope.workspaceId, "continue");
-      return manager.begin(record, prompt, overrides, scope.workspaceId);
+      return manager.begin(
+        record,
+        prompt,
+        { ...overrides, writeMode },
+        scope.workspaceId,
+        workspaceMode,
+      );
     });
   }
 
@@ -300,14 +384,17 @@ export class LocalAgentManager {
           message: `Agent ${agentId} cannot be approved until every deterministic grader has a matching successful result.`,
         }));
       }
-      return this.store.updateResult(agentId, {
+      const approved = this.store.updateIfStatusResult(agentId, "awaiting_review", {
         status: "idle",
         reviewStatus: "approved",
         reviewNote: note,
       });
+      if (approved.isErr()) return approved;
+      if (approved.value) return Result.ok(approved.value);
+      return Result.err(reviewStateChanged(agentId, "review_approve"));
     }
     if (action === "reject") {
-      return this.store.updateResult(agentId, {
+      const rejected = this.store.updateIfStatusResult(agentId, "awaiting_review", {
         status: "error",
         reviewStatus: "rejected",
         reviewNote: note,
@@ -315,6 +402,9 @@ export class LocalAgentManager {
         errorCode: "AGENT_REVIEW_REJECTED",
         errorRetryable: false,
       });
+      if (rejected.isErr()) return rejected;
+      if (rejected.value) return Result.ok(rejected.value);
+      return Result.err(reviewStateChanged(agentId, "review_reject"));
     }
 
     if ((record.attempts ?? 0) >= (record.maxAttempts ?? 5)) {
@@ -377,6 +467,7 @@ export class LocalAgentManager {
     prompt: string,
     overrides: RunOverrides,
     workspaceId?: string,
+    workspaceMode = record.workspaceMode,
   ): BetterResult<LocalAgentRecord, AgentConflictError | AgentStoreError> {
     if (this.activeTurns.has(record.id)) {
       return Result.err(new AgentConflictError({
@@ -388,10 +479,33 @@ export class LocalAgentManager {
       }));
     }
 
+    const claimed = record.status === "starting" || this.maxActiveTurnsPerWorkspace === undefined
+      ? this.store.claimRunResult(record.id, record.status, this.executionOwner).map((value) => value ? "claimed" as const : "state_changed" as const)
+      : this.store.claimRunWithCapacityResult(
+          record.id,
+          record.status,
+          this.executionOwner,
+          this.maxActiveTurnsPerWorkspace,
+        );
+    if (claimed.isErr()) return claimed;
+    if (claimed.value === "capacity") return Result.err(this.workspaceCapacityConflict("continue"));
+    if (claimed.value !== "claimed") {
+      return Result.err(new AgentConflictError({
+        code: "AGENT_CONFLICT",
+        agentId: record.id,
+        operation: record.status === "starting" ? "start" : "continue",
+        retryable: true,
+        message: `Agent ${record.id} changed state before this turn could start.`,
+      }));
+    }
+
     const updated = this.store.updateResult(record.id, {
       status: "running",
+      executionOwner: this.executionOwner,
+      workspaceMode,
       model: overrides.model ?? record.model,
       effort: overrides.effort ?? record.effort,
+      writeMode: overrides.writeMode ?? record.writeMode,
       attempts: (record.attempts ?? 0) + 1,
       reviewStatus: record.requireReview ? "pending" : (record.reviewStatus ?? "not_required"),
       reviewNote: undefined,
@@ -411,6 +525,32 @@ export class LocalAgentManager {
     this.activeTurns.set(record.id, turn);
     void turn.catch(() => undefined);
     return updated;
+  }
+
+  private cleanupInterruptedRecords(
+    records: readonly LocalAgentRecord[],
+    previousOwner?: string,
+  ): BetterResult<void, AgentStoreError> {
+    try {
+      for (const record of records) {
+        if (!record.processId) continue;
+        const provider = isLocalAgentProvider(record.provider) ? record.provider : undefined;
+        const driver = provider ? this.drivers.get(provider) : undefined;
+        if (!driver?.cleanupInterruptedProcess) {
+          throw new Error(`Cannot safely clean up interrupted ${record.provider} process ${record.processId}.`);
+        }
+        driver.cleanupInterruptedProcess({
+          agentId: record.id,
+          processId: record.processId,
+          workspaceRoot: record.workspaceRoot,
+          executionOwner: previousOwner ?? record.executionOwner,
+          providerSessionId: record.providerSessionId,
+        });
+      }
+      return Result.ok(undefined);
+    } catch (cause) {
+      return Result.err(new AgentStoreError("reconcile_active_runs_cleanup", cause));
+    }
   }
 
   private async runTurn(
@@ -448,6 +588,16 @@ export class LocalAgentManager {
       const input = this.buildRunInputResult(authorizedRecord, profile.value, prompt, overrides);
       if (input.isErr()) {
         this.persistRunError(record, input.error, startedAt);
+        return;
+      }
+      const workspaceAuthority = this.writableWorkspaceResult(
+        input.value.writeMode ?? "allowed",
+        detectWorkspaceMode(workspaceRoot),
+        record.profileName,
+        "run",
+      );
+      if (workspaceAuthority.isErr()) {
+        this.persistRunError(record, workspaceAuthority.error, startedAt);
         return;
       }
       const driver = this.driverResult(record.provider, "run", record.id);
@@ -494,6 +644,7 @@ export class LocalAgentManager {
       const graderResults = await this.runGraders(
         workspaceRoot,
         current.value.graderCommands ?? [],
+        input.value.writeMode ?? "allowed",
       );
       const needsReview = Boolean(current.value.requireReview)
         || !gradersPassed(current.value.graderCommands ?? [], graderResults);
@@ -544,7 +695,15 @@ export class LocalAgentManager {
   private async runGraders(
     workspaceRoot: string,
     commands: readonly string[],
+    writeMode: LocalAgentWriteMode,
   ): Promise<LocalAgentGraderResult[]> {
+    if (writeMode === "read_only" && commands.length > 0) {
+      return commands.map((command) => ({
+        command,
+        timedOut: false,
+        output: "Skipped: read-only subagents cannot execute shell grader commands.",
+      }));
+    }
     const results: LocalAgentGraderResult[] = [];
     for (const command of commands) {
       if (!this.accepting) {
@@ -644,29 +803,9 @@ export class LocalAgentManager {
     }
     const body = profile?.body.trim();
     const fullPrompt = body ? `${body}\n\nTask:\n${prompt}` : prompt;
-    const writeMode = overrides.writeMode
-      ?? (profile
-        ? localAgentProfileWriteMode(profile)
-        : record.provider === "agy" ? "full_access" : "allowed");
-    const provider = isLocalAgentProvider(record.provider) ? record.provider : undefined;
-    if (!provider) {
-      return Result.err(new AgentTargetError({
-        code: "PROVIDER_NOT_CONFIGURED",
-        target: record.profileName,
-        retryable: false,
-        message: `No local agent provider is configured for ${record.provider}.`,
-      }));
-    }
-    if (!localAgentProviderSupportsWriteMode(provider, writeMode)) {
-      return Result.err(new AgentTargetError({
-        code: "PROVIDER_NOT_CONFIGURED",
-        target: record.profileName,
-        provider,
-        operation: "configure_permissions",
-        retryable: false,
-        message: `${record.provider} does not support subagent write mode ${writeMode}.`,
-      }));
-    }
+    const writeModeResult = this.recordWriteModeResult(record, profile, overrides.writeMode);
+    if (writeModeResult.isErr()) return writeModeResult;
+    const writeMode = writeModeResult.value;
     return Result.ok({
       prompt: fullPrompt,
       workspaceRoot: record.workspaceRoot,
@@ -679,6 +818,84 @@ export class LocalAgentManager {
       modelOverrideRequested: overrides.model !== undefined,
       effortOverrideRequested: overrides.effort !== undefined,
     });
+  }
+
+  private startWriteModeResult(
+    target: LocalAgentTarget,
+    requested: LocalAgentWriteMode | undefined,
+  ): BetterResult<LocalAgentWriteMode, AgentTargetError> {
+    const base = target.kind === "profile"
+      ? localAgentProfileWriteMode(target.profile)
+      : defaultProviderWriteMode(target.provider);
+    return this.authorizedWriteModeResult(target.name, target.provider, base, requested);
+  }
+
+  private recordWriteModeResult(
+    record: LocalAgentRecord,
+    profile: LocalAgentProfile | undefined,
+    requested: LocalAgentWriteMode | undefined,
+  ): BetterResult<LocalAgentWriteMode, AgentTargetError> {
+    const provider = isLocalAgentProvider(record.provider) ? record.provider : undefined;
+    if (!provider) {
+      return Result.err(new AgentTargetError({
+        code: "PROVIDER_NOT_CONFIGURED",
+        target: record.profileName,
+        retryable: false,
+        message: `No local agent provider is configured for ${record.provider}.`,
+      }));
+    }
+    const profileMode = profile ? localAgentProfileWriteMode(profile) : undefined;
+    const persisted = record.writeMode ?? profileMode ?? defaultProviderWriteMode(provider);
+    const base = profileMode ? narrowerWriteMode(persisted, profileMode) : persisted;
+    return this.authorizedWriteModeResult(record.profileName, provider, base, requested);
+  }
+
+  private authorizedWriteModeResult(
+    target: string,
+    provider: LocalAgentProvider,
+    base: LocalAgentWriteMode,
+    requested: LocalAgentWriteMode | undefined,
+  ): BetterResult<LocalAgentWriteMode, AgentTargetError> {
+    const writeMode = requested ?? base;
+    if (writeModeRank(writeMode) > writeModeRank(base)) {
+      return Result.err(new AgentTargetError({
+        code: "PROVIDER_NOT_CONFIGURED",
+        target,
+        provider,
+        operation: "configure_permissions",
+        retryable: false,
+        message: `Subagent target ${target} cannot broaden write mode from ${base} to ${writeMode}.`,
+      }));
+    }
+    if (!localAgentProviderSupportsWriteMode(provider, writeMode)) {
+      return Result.err(new AgentTargetError({
+        code: "PROVIDER_NOT_CONFIGURED",
+        target,
+        provider,
+        operation: "configure_permissions",
+        retryable: false,
+        message: `${provider} does not support subagent write mode ${writeMode}.`,
+      }));
+    }
+    return Result.ok(writeMode);
+  }
+
+  private writableWorkspaceResult(
+    writeMode: LocalAgentWriteMode,
+    workspaceMode: LocalAgentWorkspaceMode | undefined,
+    target: string,
+    operation: string,
+  ): BetterResult<void, AgentTargetError> {
+    if (!this.requireWorktreeForWritable || writeMode === "read_only" || workspaceMode === "worktree") {
+      return Result.ok(undefined);
+    }
+    return Result.err(new AgentTargetError({
+      code: "PROVIDER_NOT_CONFIGURED",
+      target,
+      operation,
+      retryable: false,
+      message: `Writable subagent target ${target} requires an isolated worktree workspace.`,
+    }));
   }
 
   private profileForRecordResult(
@@ -788,25 +1005,13 @@ export class LocalAgentManager {
     }
   }
 
-  private workspaceCapacityResult(
-    workspaceRoot: string,
-    workspaceId: string | undefined,
-    operation: "start" | "continue",
-  ): BetterResult<void, AgentConflictError | AgentStoreError> {
-    const limit = this.maxActiveTurnsPerWorkspace;
-    if (limit === undefined) return Result.ok(undefined);
-    const listed = this.store.listResult({ workspaceId, workspaceRoot });
-    if (listed.isErr()) return listed;
-    const active = listed.value.filter(
-      (record) => record.status === "starting" || record.status === "running",
-    ).length;
-    if (active < limit) return Result.ok(undefined);
-    return Result.err(new AgentConflictError({
+  private workspaceCapacityConflict(operation: "start" | "continue"): AgentConflictError {
+    return new AgentConflictError({
       code: "AGENT_CONFLICT",
       operation,
       retryable: true,
-      message: `Workspace already has ${active} active subagent executions; the limit is ${limit}. Reuse or inspect an existing agent before starting another turn.`,
-    }));
+      message: `Workspace subagent capacity is full; the limit is ${this.maxActiveTurnsPerWorkspace}. Reuse or inspect an existing agent before starting another turn.`,
+    });
   }
 
   private agentWorkspaceResult(
@@ -870,6 +1075,35 @@ function gradersPassed(commands: readonly string[], results: readonly LocalAgent
     const result = results[index];
     return result?.command === command && result.exitCode === 0 && !result.timedOut;
   });
+}
+
+function defaultProviderWriteMode(provider: LocalAgentProvider): LocalAgentWriteMode {
+  return provider === "agy" ? "full_access" : "allowed";
+}
+
+function reviewStateChanged(agentId: string, operation: string): AgentConflictError {
+  return new AgentConflictError({
+    code: "AGENT_CONFLICT",
+    agentId,
+    operation,
+    retryable: true,
+    message: `Agent ${agentId} review state changed before this decision could be committed.`,
+  });
+}
+
+function writeModeRank(writeMode: LocalAgentWriteMode): number {
+  switch (writeMode) {
+    case "read_only": return 0;
+    case "allowed": return 1;
+    case "full_access": return 2;
+  }
+}
+
+function narrowerWriteMode(
+  left: LocalAgentWriteMode,
+  right: LocalAgentWriteMode,
+): LocalAgentWriteMode {
+  return writeModeRank(left) <= writeModeRank(right) ? left : right;
 }
 
 function safeCauseType(cause: unknown): string | undefined {

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { execFileSync, spawn } from "node:child_process";
 import { Panic, Result, type Result as BetterResult } from "better-result";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -23,6 +24,13 @@ import type { SubagentsConfig } from "./local-agent-config.js";
 
 const root = await mkdtemp(join(tmpdir(), "devspace-agent-manager-test-"));
 const directRoot = await mkdtemp(join(tmpdir(), "devspace-direct-agent-manager-test-"));
+const worktreeParent = await mkdtemp(join(tmpdir(), "devspace-agent-worktree-test-"));
+const worktreeRoot = join(worktreeParent, "worktree");
+execFileSync("git", ["init", "--quiet", root]);
+execFileSync("git", ["-C", root, "config", "user.email", "devspace-test@example.invalid"]);
+execFileSync("git", ["-C", root, "config", "user.name", "DevSpace Test"]);
+execFileSync("git", ["-C", root, "commit", "--allow-empty", "-m", "init", "--quiet"]);
+execFileSync("git", ["-C", root, "worktree", "add", "--detach", worktreeRoot, "HEAD", "--quiet"]);
 const stateDir = join(root, "state");
 const scope = { workspaceId: "ws_test", workspaceRoot: root };
 const profile: LocalAgentProfile = {
@@ -39,6 +47,14 @@ const disabledProfile: LocalAgentProfile = {
   name: "disabled-reviewer",
   filePath: join(root, "disabled-reviewer.md"),
   disabled: true,
+};
+const workerProfile: LocalAgentProfile = {
+  ...profile,
+  name: "worker",
+  description: "Writable test worker",
+  writeMode: "allowed",
+  filePath: join(root, "worker.md"),
+  body: "Implement only the requested task.",
 };
 const agyProfile: LocalAgentProfile = {
   name: "agy-worker",
@@ -193,10 +209,15 @@ class FakeQoderRuntime implements LocalAgentRuntime {
 }
 
 const qoderRuntimes = new Map<string, FakeQoderRuntime>();
+const cleanupOwners: Array<string | undefined> = [];
 const qoderDriver: LocalAgentDriver = {
   provider: "qoder",
   reuseRuntime: false,
   runtimeKey: (context: LocalAgentRuntimeContext) => context.agentId,
+  cleanupInterruptedProcess: ({ processId, executionOwner }) => {
+    cleanupOwners.push(executionOwner);
+    process.kill(processId, "SIGTERM");
+  },
   createRuntime: async (context) => {
     const runtime = new FakeQoderRuntime();
     qoderRuntimes.set(context.agentId, runtime);
@@ -227,8 +248,8 @@ const manager = new LocalAgentManager({
   store,
   drivers: [driver, agyDriver, qoderDriver],
   pool: new LocalAgentRuntimePool(),
-  loadProfiles: async () => [profile, disabledProfile, agyProfile],
-  allowedRoots: [root],
+  loadProfiles: async () => [profile, disabledProfile, workerProfile, agyProfile],
+  allowedRoots: [root, worktreeRoot],
   subagents: () => currentSubagents,
 });
 
@@ -303,6 +324,241 @@ if (capacityContinueBlocked.isErr()) {
 runtimes.get(capacityFirst.id)!.release();
 await waitFor(() => capacityManager.activeTurnCount === 0);
 await capacityManager.close();
+
+const authorityStore = new LocalAgentStore(join(root, "authority-state"));
+const authorityManager = new LocalAgentManager({
+  store: authorityStore,
+  drivers: [driver],
+  pool: new LocalAgentRuntimePool(),
+  loadProfiles: async () => [profile, workerProfile],
+  allowedRoots: [root],
+  subagents,
+  executionOwner: "authority-test",
+  requireWorktreeForWritable: true,
+});
+const checkoutWorker = await authorityManager.start({
+  target: "worker",
+  prompt: "must use worktree",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+});
+assert.equal(checkoutWorker.isErr(), true);
+if (checkoutWorker.isErr()) assert.match(checkoutWorker.error.message, /requires an isolated worktree/i);
+const checkoutRawProvider = await authorityManager.start({
+  target: "codex",
+  prompt: "raw provider must use worktree",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+});
+assert.equal(checkoutRawProvider.isErr(), true);
+if (checkoutRawProvider.isErr()) assert.match(checkoutRawProvider.error.message, /requires an isolated worktree/i);
+const worktreeWorker = unwrap(await authorityManager.start({
+  target: "worker",
+  prompt: "worktree implementation",
+  workspaceRoot: worktreeRoot,
+}));
+await waitFor(() => authorityStore.getById(worktreeWorker.id)?.status === "idle");
+await authorityManager.close();
+
+const sharedStore = new LocalAgentStore(join(root, "owner-state"));
+const personalRun = sharedStore.create({
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  profileName: "reviewer",
+  provider: "codex",
+  executionOwner: "personal-runtime",
+  writeMode: "read_only",
+});
+sharedStore.update(personalRun.id, { status: "running" });
+const cliRun = sharedStore.create({
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  profileName: "reviewer",
+  provider: "codex",
+  executionOwner: "cli-daemon",
+  writeMode: "read_only",
+});
+sharedStore.update(cliRun.id, { status: "running" });
+const legacyRun = sharedStore.create({
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  profileName: "reviewer",
+  provider: "codex",
+  executionOwner: "legacy",
+  writeMode: "read_only",
+});
+sharedStore.update(legacyRun.id, { status: "running" });
+const legacyQoderProcess = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  stdio: "ignore",
+  windowsHide: true,
+});
+assert.ok(legacyQoderProcess.pid);
+const legacyQoderRun = sharedStore.create({
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  profileName: "qoder",
+  provider: "qoder",
+  executionOwner: "legacy",
+  workspaceMode: "worktree",
+  writeMode: "allowed",
+});
+sharedStore.update(legacyQoderRun.id, { status: "running", processId: legacyQoderProcess.pid });
+const ownerManager = new LocalAgentManager({
+  store: sharedStore,
+  drivers: [driver, qoderDriver],
+  pool: new LocalAgentRuntimePool(),
+  loadProfiles: async () => [profile],
+  allowedRoots: [root],
+  subagents,
+  executionOwner: "personal-runtime",
+});
+unwrap(ownerManager.reconcileActiveRuns());
+assert.equal(sharedStore.getById(personalRun.id)?.status, "error");
+assert.equal(sharedStore.getById(cliRun.id)?.status, "running");
+assert.equal(sharedStore.getById(legacyRun.id)?.status, "running");
+unwrap(ownerManager.reconcileLegacyActiveRuns("legacy migration"));
+assert.equal(sharedStore.getById(legacyRun.id)?.status, "error");
+assert.equal(sharedStore.getById(legacyQoderRun.id)?.status, "error");
+await waitFor(() => {
+  try { process.kill(legacyQoderProcess.pid!, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+});
+assert.equal(cleanupOwners.at(-1), "legacy");
+assert.equal(sharedStore.getById(cliRun.id)?.status, "running");
+await ownerManager.close();
+
+const retryLegacyStore = new LocalAgentStore(join(root, "legacy-retry-state"));
+const retryLegacyRun = retryLegacyStore.create({
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  profileName: "qoder",
+  provider: "qoder",
+  executionOwner: "legacy",
+  workspaceMode: "worktree",
+  writeMode: "allowed",
+});
+retryLegacyStore.update(retryLegacyRun.id, {
+  status: "running",
+  processId: 424242,
+  providerSessionId: "legacy-session",
+});
+let legacyCleanupAttempts = 0;
+const retryLegacyDriver: LocalAgentDriver = {
+  provider: "qoder",
+  reuseRuntime: false,
+  runtimeKey: (context) => context.agentId,
+  cleanupInterruptedProcess: () => {
+    legacyCleanupAttempts += 1;
+    if (legacyCleanupAttempts === 1) throw new Error("transient cleanup failure");
+  },
+  createRuntime: async () => Result.ok(new FakeQoderRuntime()),
+};
+const retryLegacyManager = new LocalAgentManager({
+  store: retryLegacyStore,
+  drivers: [retryLegacyDriver],
+  pool: new LocalAgentRuntimePool(),
+  loadProfiles: async () => [],
+  allowedRoots: [root],
+  subagents,
+  executionOwner: "personal-runtime",
+});
+const firstLegacyRecovery = retryLegacyManager.reconcileLegacyActiveRuns("legacy retry");
+assert.equal(firstLegacyRecovery.isErr(), true);
+assert.equal(retryLegacyStore.getById(retryLegacyRun.id)?.executionOwner, "legacy:personal-runtime");
+assert.equal(retryLegacyStore.getById(retryLegacyRun.id)?.status, "running");
+unwrap(retryLegacyManager.reconcileLegacyActiveRuns("legacy retry"));
+assert.equal(legacyCleanupAttempts, 2);
+assert.equal(retryLegacyStore.getById(retryLegacyRun.id)?.status, "error");
+await retryLegacyManager.close();
+
+const raceState = join(root, "continue-race-state");
+const raceStoreA = new LocalAgentStore(raceState);
+const raceStoreB = new LocalAgentStore(raceState);
+const raceRecord = raceStoreA.create({
+  workspaceRoot: worktreeRoot,
+  profileName: "reviewer",
+  provider: "codex",
+  executionOwner: "personal-runtime",
+  workspaceMode: "checkout",
+  writeMode: "read_only",
+});
+raceStoreA.update(raceRecord.id, { status: "idle" });
+let raceArrivals = 0;
+let releaseRaceProfiles!: () => void;
+const raceProfilesReady = new Promise<void>((resolve) => { releaseRaceProfiles = resolve; });
+const loadRaceProfiles = async () => {
+  raceArrivals += 1;
+  if (raceArrivals === 2) releaseRaceProfiles();
+  await raceProfilesReady;
+  return [profile];
+};
+const raceManagerA = new LocalAgentManager({
+  store: raceStoreA,
+  drivers: [driver],
+  pool: new LocalAgentRuntimePool(),
+  loadProfiles: loadRaceProfiles,
+  allowedRoots: [root, worktreeRoot],
+  subagents,
+  executionOwner: "personal-runtime",
+});
+const raceManagerB = new LocalAgentManager({
+  store: raceStoreB,
+  drivers: [driver],
+  pool: new LocalAgentRuntimePool(),
+  loadProfiles: loadRaceProfiles,
+  allowedRoots: [root, worktreeRoot],
+  subagents,
+  executionOwner: "cli-daemon",
+});
+const raceResults = await Promise.all([
+  raceManagerA.continue(raceRecord.id, "hold cross-owner race", {}, { workspaceRoot: worktreeRoot }),
+  raceManagerB.continue(raceRecord.id, "hold cross-owner race", {}, { workspaceRoot: worktreeRoot }),
+]);
+assert.equal(raceResults.filter((result) => result.isOk()).length, 1);
+assert.equal(raceResults.filter((result) => result.isErr()).length, 1);
+const raceFailure = raceResults.find((result) => result.isErr());
+if (raceFailure?.isErr()) assert.equal(raceFailure.error.code, "AGENT_CONFLICT");
+await waitFor(() => runtimes.get(raceRecord.id)?.inputs.length === 1);
+assert.equal(raceStoreA.getById(raceRecord.id)?.workspaceMode, "worktree");
+runtimes.get(raceRecord.id)!.release();
+await waitFor(() => raceManagerA.activeTurnCount + raceManagerB.activeTurnCount === 0);
+await Promise.all([raceManagerA.close(), raceManagerB.close()]);
+
+const orphanState = join(root, "orphan-state");
+const orphanStore = new LocalAgentStore(orphanState);
+const orphan = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
+  stdio: "ignore",
+  windowsHide: true,
+});
+assert.ok(orphan.pid);
+const orphanRecord = orphanStore.create({
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  profileName: "qoder",
+  provider: "qoder",
+  executionOwner: "cli-daemon",
+  workspaceMode: "worktree",
+  writeMode: "allowed",
+});
+orphanStore.update(orphanRecord.id, { status: "running", processId: orphan.pid });
+const orphanManager = new LocalAgentManager({
+  store: orphanStore,
+  drivers: [qoderDriver],
+  pool: new LocalAgentRuntimePool(),
+  loadProfiles: async () => [],
+  allowedRoots: [root],
+  subagents,
+  executionOwner: "cli-daemon",
+});
+unwrap(orphanManager.reconcileActiveRuns());
+await waitFor(() => {
+  try { process.kill(orphan.pid!, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === "ESRCH"; }
+});
+assert.equal(orphanStore.getById(orphanRecord.id)?.status, "error");
+assert.equal(orphanStore.getById(orphanRecord.id)?.processId, undefined);
+assert.equal(cleanupOwners.at(-1), "cli-daemon");
+await orphanManager.close();
 
 const outside = await manager.start({
   target: "reviewer",
@@ -688,8 +944,21 @@ await waitFor(() => getRecord(defect.id).status === "error");
 assert.equal(getRecord(defect.id).errorCode, "AGENT_INTERNAL_ERROR");
 assert.notEqual(getRecord(defect.id).errorCode, "PROVIDER_EXECUTION_ERROR");
 
-const gradingAtShutdown = unwrap(await manager.start({
+const readOnlyGrader = await manager.start({
   target: "reviewer",
+  prompt: "must not run shell graders",
+  workspaceId: scope.workspaceId,
+  workspaceRoot: root,
+  graderCommands: [`"${process.execPath}" -e "process.exit(0)"`],
+});
+assert.equal(readOnlyGrader.isErr(), true);
+if (readOnlyGrader.isErr()) {
+  assert.equal(readOnlyGrader.error.code, "PROVIDER_NOT_CONFIGURED");
+  assert.match(readOnlyGrader.error.message, /read-only subagents cannot execute shell grader/i);
+}
+
+const gradingAtShutdown = unwrap(await manager.start({
+  target: "worker",
   prompt: "run acceptance commands",
   workspaceId: scope.workspaceId,
   workspaceRoot: root,
@@ -730,6 +999,7 @@ closedStore.close();
 await manager.close();
 await rm(root, { recursive: true, force: true });
 await rm(directRoot, { recursive: true, force: true });
+await rm(worktreeParent, { recursive: true, force: true });
 
 function getRecord(id: string) {
   return unwrap(manager.get(id, scope));

@@ -11,10 +11,12 @@ try {
       : await (await import('./desktop/main.mjs')).startDesktop(home);
     if (service) for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => void service.close().catch(error => { console.error(error.message); process.exitCode = 1; }));
   } else if (action === 'install') {
-    const source = process.argv[3] ? resolve(process.argv[3]) : resolve(fileURLToPath(new URL('..', import.meta.url)));
+    const explicitSource = process.argv[3] ? resolve(process.argv[3]) : undefined;
+    const source = explicitSource ?? resolve(fileURLToPath(new URL('..', import.meta.url)));
     const manifest = await (await import('./verify.mjs')).ensureInstallCandidate(source, {
       onProgress: stage => console.error(`VERIFY ${stage}`),
     });
+    if (explicitSource) await (await import('./config.mjs')).bindPersonalSourceRoot(home, explicitSource);
     console.log(JSON.stringify(await (await import('./install.mjs')).requestInstallAndWait(source, home, {
       expectedCandidateHead: manifest.candidateHead,
       expectedPayloadSha256: manifest.payload.sha256,

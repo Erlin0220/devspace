@@ -116,8 +116,9 @@ test('native subagent tools bridge the existing agent runtime without MCP App me
     provider: 'codex', model: 'gpt-5.6-luna', effort: 'high', status: 'running' as const,
     createdAt: '2026-09-18T00:00:00.000Z', updatedAt: '2026-09-18T00:00:00.000Z' };
   const calls: string[] = [];
+  const starts: Array<{ target?: string }> = [];
   const subagents = new PersonalSubagents({
-    start: async input => { calls.push('start:' + input.target); return Result.ok(baseRecord); },
+    start: async input => { calls.push('start:' + input.target); starts.push(input); return Result.ok(baseRecord); },
     get: async id => { calls.push('get:' + id); return Result.ok({ ...baseRecord, status: 'idle' as const, latestResponse: 'EXPLORER_OK' }); },
     continue: async id => { calls.push('continue:' + id); return Result.ok(baseRecord); },
     review: async (id, action) => { calls.push('review:' + id + ':' + action); return Result.ok({ ...baseRecord, status: 'idle' as const }); },
@@ -148,11 +149,9 @@ test('native subagent tools bridge the existing agent runtime without MCP App me
   assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /high-level objective/i);
   assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /do not include credentials/i);
   assert.match(JSON.stringify(runAgentTool?.inputSchema ?? {}), /goal/i);
-  const rejectedWritable = await client.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex-worker', prompt: 'implement' } });
-  assert.equal(rejectedWritable.isError, true);
-  assert.match(JSON.stringify(rejectedWritable), /WRITABLE_PROFILE_REQUIRES_WORKTREE/);
   const run = await client.callTool({ name: 'run_agent', arguments: { workspaceId: workspace.id, target: 'codex-explorer', prompt: 'inspect' } });
   assert.deepEqual(run.structuredContent, { id: 'agt_test', status: 'running' });
+  assert.equal(starts[0]?.target, 'codex-explorer');
   const get = await client.callTool({ name: 'get_agent', arguments: { workspaceId: workspace.id, agentId: 'agt_test' } });
   assert.equal((get.structuredContent as { status?: string }).status, 'completed');
   assert.equal((get.structuredContent as { response?: string }).response, 'EXPLORER_OK');

@@ -28,6 +28,15 @@ import {
 }
 
 {
+  const availability = checkLocalAgentProviderAvailability("agy", {
+    ...process.env,
+    AGY_COMMAND: process.execPath,
+  });
+  assert.equal(availability.available, false);
+  assert.match(availability.reason ?? "", /compatible agy executable not found/);
+}
+
+{
   const snapshot = getLocalAgentProviderAvailabilitySnapshot({
     ...process.env,
     CODEX_COMMAND: "/definitely/missing/devspace-codex",

@@ -94,7 +94,7 @@ try {
       if (request.method === "agent.start") {
         socket.end(encodeLocalAgentDaemonResponse({
           requestId: request.requestId,
-          protocolVersion: 3,
+          protocolVersion: 4,
           ok: false,
           error: {
             code: "UNKNOWN_TARGET",
@@ -107,10 +107,12 @@ try {
       }
       const result = request.method === "agent.list"
         ? [current]
+        : request.method === "agent.review"
+          ? current
         : request.method === "hello"
           ? {
               state: "ready",
-              protocolVersion: 3,
+              protocolVersion: 4,
               pid: process.pid,
               endpoint: daemonSocket,
               startedAt: "now",
@@ -121,7 +123,7 @@ try {
           : null;
       socket.end(encodeLocalAgentDaemonResponse({
         requestId: request.requestId,
-        protocolVersion: 3,
+        protocolVersion: 4,
         ok: true,
         result,
       }));
@@ -172,6 +174,33 @@ try {
       jsonOutput,
       `${JSON.stringify([{ id: current.id, status: "completed", target: "reviewer" }])}\n`,
     );
+
+    const { stdout: reviewOutput } = await execFileAsync(
+      "node",
+      ["--import", "tsx", "src/cli.ts", "agents", "review", current.id, "approve", "looks good", "--json"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          DEVSPACE_CONFIG_DIR: configDir,
+          DEVSPACE_ALLOWED_ROOTS: projectRoot,
+          DEVSPACE_STATE_DIR: stateDir,
+          DEVSPACE_WORKSPACE_ID: "ws_current",
+          DEVSPACE_WORKSPACE_ROOT: projectRoot,
+          DEVSPACE_SUBAGENTS: "1",
+          DEVSPACE_OAUTH_OWNER_TOKEN: "test-owner-token-that-is-long-enough",
+        },
+      },
+    );
+    assert.equal(JSON.parse(reviewOutput).status, "completed");
+    const reviewRequest = daemonRequests.find((request) => request.method === "agent.review");
+    assert.deepEqual(reviewRequest?.params, {
+      id: current.id,
+      action: "approve",
+      note: "looks good",
+      scope: { workspaceId: "ws_current", workspaceRoot: realpathSync.native(projectRoot) },
+    });
 
     const { stdout: directOutput } = await execFileAsync(
       "node",

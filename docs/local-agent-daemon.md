@@ -5,7 +5,7 @@ process rather than by an individual short-lived CLI invocation. This preserves
 the CLI contract where a run can return an agent id while work continues:
 
 ```text
-devspace agents run/continue/show/ls
+devspace agents run/continue/review/show/ls
           │
           ▼
     devspace-agentd
@@ -29,6 +29,20 @@ Qoder provider has one execution path: native Goal mode in a visible PowerShell
 rejected. DevSpace persists the native Qoder session only after Qoder reports it
 through `--list-sessions`, plus process evidence, grader results, attempts, and
 review state in the SQLite agent record.
+
+The Web Runtime and CLI daemon may share the same SQLite database, but active
+executions have explicit owners. Startup recovery reconciles only rows owned by
+the process that is restarting, so starting the CLI daemon cannot mark a running
+Web subagent as interrupted (and vice versa). A later `continue` turn transfers
+execution ownership to the manager that actually starts that turn. Pre-owner
+rows from older database versions are atomically claimed by the first current
+manager that starts, then reconciled once. Starting or continuing an existing
+logical agent uses a persisted compare-and-swap, so Personal and the CLI daemon
+cannot both begin a turn for the same agent after racing on an idle record.
+The per-workspace active-turn limit is reserved in the same SQLite write
+transaction: new starts atomically count-and-insert a `starting` row, while
+continues/retries atomically count-and-claim the existing row. Separate Web and
+CLI processes therefore cannot both consume the last available workspace slot.
 
 Communication uses a private Unix domain socket on Linux/macOS or a named pipe
 on Windows. The endpoint is not exposed through the public MCP HTTP port.
@@ -66,6 +80,12 @@ devspace agents daemon stop
 devspace agents daemon logs
 ```
 
+After a protocol upgrade, these daemon-management commands first try the current
+protocol and, when the existing daemon explicitly reports an older supported
+protocol, retry that same status/stop/logs request using the daemon's version.
+Ordinary agent work still upgrades an idle older daemon before using newer agent
+methods.
+
 Agent commands accept `--json` when a machine-readable response is needed.
 They emit one compact JSON value. `run` and `continue` return only the logical
 agent ID and status, `ls` returns session summaries, and `show` returns the
@@ -76,12 +96,27 @@ or receipt output. Immediate failures are emitted as
 Successful `daemon status` and `daemon stop` output the daemon status object,
 and successful `daemon logs` output is `{ "logs": "<text>" }`.
 
+Goal work that reaches `awaiting_review` can be resolved from the CLI with:
+
+```bash
+devspace agents review <id> approve
+devspace agents review <id> retry "remaining acceptance failure"
+devspace agents review <id> reject "reason"
+```
+
 Agent identity is explicit at the client boundary. `agents run` starts a new
 logical agent from a profile or provider; `agents continue <id>` continues an
 existing logical agent. Provider session IDs are never accepted as logical
 agent IDs, and the daemon does not resolve ambiguous prefixes.
 
 Shutdown gives active turns a bounded graceful window. If that window expires,
-the process exits with active records left durable; the next daemon startup
-reconciles stale `starting` and `running` records to `error` without discarding
-their `providerSessionId` or `latestResponse`.
+the process exits with its active records left durable; the next daemon startup
+reconciles only daemon-owned stale `starting` and `running` records to `error`
+without discarding their `providerSessionId` or `latestResponse`. Providers that
+publish a durable process id must verify ownership before orphan cleanup; Qoder
+checks the PowerShell launcher identity plus an agent-specific run-directory
+marker before terminating its visible Goal process. The migration-only legacy
+path accepts the older DevSpace Qoder run-directory prefix only when the row's
+persisted provider session id also appears in that process's retained `run.json`
+arguments. A legacy row without that second identity proof is reconciled without
+issuing `taskkill`, avoiding PID-reuse termination of an unrelated Qoder process.

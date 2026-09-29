@@ -1,19 +1,22 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer, request as httpRequest } from 'node:http';
-import { randomInt } from 'node:crypto';
-import { access, chmod, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { execFile } from 'node:child_process';
+import { access, chmod, mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
+import { promisify } from 'node:util';
 import { createDesktopController } from '../desktop/controller.mjs';
 import { startLocalControl, bindPort } from '../desktop/local-control.mjs';
 import { atomicJson } from '../state.mjs';
-import { runtimeEnvironment, readPersonalConfig } from '../config.mjs';
+import { bindPersonalSourceRoot, runtimeEnvironment, readPersonalConfig } from '../config.mjs';
+import { operations } from '../desktop/main.mjs';
 import { discoverCodexCommand, taskXml, ownerId } from '../desktop/platform.mjs';
 import { runtimeSnapshot, waitForRuntime } from '../runtime.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
 const tick = () => new Promise(resolve => setImmediate(resolve));
+const exec = promisify(execFile);
 test('runtime health separates endpoint response from owned readiness and never follows redirects', async t => {
   const home = join(tmpdir(), 'personal-health-fixture');
   let status = 200;
@@ -73,6 +76,27 @@ test('upstream settings remain separate and pause corruption fails closed', asyn
   assert.equal(runtime.DEVSPACE_TOOL_MODE, 'codex'); assert.equal(runtime.DEVSPACE_WIDGETS, 'off'); assert.equal(runtime.DEVSPACE_ALLOWED_ROOTS, home);
   await atomicJson(join(home, 'intent.json'), { paused: 'invalid' }); await assert.rejects(readPersonalConfig(home), /pause intent/);
 });
+test('Personal sourceRoot binding is explicit and update prepare fails clearly when it is absent', async t => {
+  const fixture = await mkdtemp(join(tmpdir(), 'personal-source-root-'));
+  const home = join(fixture, 'home'), source = join(fixture, 'source');
+  t.after(() => rm(fixture, { recursive: true, force: true }));
+  await mkdir(join(source, 'personal'), { recursive: true });
+  await writeFile(join(source, 'package.json'), JSON.stringify({ name: '@waishnav/devspace' }));
+  await writeFile(join(source, 'personal', 'upstream.json'), '{}');
+  await exec('git', ['init', '--quiet'], { cwd: source, windowsHide: true });
+  await atomicJson(join(home, 'personal.json'), { schema: 1, projectRoot: home, futureSetting: 'preserve' });
+  await atomicJson(join(home, 'intent.json'), { paused: false });
+  await assert.rejects(
+    operations(home)['update-prepare']({ onProgress: () => {} }),
+    /未配置 Personal 源码目录/,
+  );
+  assert.equal(await bindPersonalSourceRoot(home, source), source);
+  const stored = JSON.parse(await readFile(join(home, 'personal.json'), 'utf8'));
+  assert.equal(stored.sourceRoot, source);
+  assert.equal(stored.futureSetting, 'preserve');
+  assert.equal((await operations(home).status()).sourceRoot, source);
+  await assert.rejects(bindPersonalSourceRoot(home, home), /Personal DevSpace Git checkout/);
+});
 test('native task identity is independent of API tokens and uses current-user GUI launcher ownership', () => {
   const home = join(tmpdir(), 'personal-example'); const text = taskXml({ home, root: 'C:\\example', node: 'C:\\node.exe', component: 'runtime', sid: 'S-1-5-21-123-456-789-1001', codexCommand: 'C:\\tools\\codex.cmd' });
   assert.ok(text.includes(`PersonalDevSpace:${ownerId(home)}:runtime`)); assert.match(text, /HighestAvailable/); assert.match(text, /InteractiveToken/);
@@ -105,14 +129,22 @@ test('Control Center uses the Personal logo and keeps manual status checks out o
 });
 
 async function webFixture(t, { collide = false } = {}) {
-  const home = await mkdtemp(join(tmpdir(), 'personal-control-')); const port = randomInt(50000, 65000);
-  let blocker;
-  if (collide) { blocker = createServer((_req, res) => res.end('other application')); await bindPort(blocker, port); }
+  const home = await mkdtemp(join(tmpdir(), 'personal-control-'));
+  const blocker = createServer((_req, res) => res.end('other application'));
+  let port;
+  for (let attempt = 0; attempt < 16 && !port; attempt++) {
+    await bindPort(blocker, 0);
+    const candidate = blocker.address().port;
+    if (candidate >= 49152 && candidate <= 65535) port = candidate;
+    else await new Promise(resolve => blocker.close(resolve));
+  }
+  if (!port) throw new Error('OS did not allocate a valid Personal control port');
+  if (!collide) await new Promise(resolve => blocker.close(resolve));
   const events = [];
   const controller = { snapshot: () => ({ status: 'ready', running: true }), dispatch: async (action, value) => { events.push([action, value]); return action === 'choose-folder' ? 'C:\\project' : { ok: true }; } };
   const web = await startLocalControl(controller, { home, preferredPort: port, retryAttempts: 1, retryDelayMs: 1 });
   const token = web.url.split('#')[1];
-  t.after(async () => { await web.close(); if (blocker) await new Promise(resolve => blocker.close(resolve)); await rm(home, { recursive: true, force: true }); });
+  t.after(async () => { await web.close(); if (collide) await new Promise(resolve => blocker.close(resolve)); await rm(home, { recursive: true, force: true }); });
   const request = (path, options = {}) => fetch(`${web.origin}${path}`, { ...options, headers: { Authorization: `Bearer ${token}`, ...options.headers } });
   return { home, port, web, token, request, events };
 }
@@ -133,6 +165,7 @@ test('Control Center enforces capability, origin, host, content type and bounded
   const post = body => f.request('/api/action', { method: 'POST', headers: { Origin: f.web.origin, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   assert.equal((await post({ action: 'check', unexpected: true })).status, 400);
   assert.equal((await post({ action: 'project-root', projectRoot: 'x'.repeat(9000) })).status, 413);
+  assert.equal((await post({ action: 'source-root', sourceRoot: 'x'.repeat(9000) })).status, 413);
   assert.equal((await post({ action: 'check' })).status, 200); assert.equal(f.events.length, 1);
   assert.equal((await post({ action: 'launch-qoder' })).status, 400);
 });

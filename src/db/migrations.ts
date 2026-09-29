@@ -42,6 +42,11 @@ const migrations: Migration[] = [
     name: "durable-agent-executions",
     up: migrateDurableAgentExecutions,
   },
+  {
+    version: 8,
+    name: "local-agent-authority",
+    up: migrateLocalAgentAuthority,
+  },
 ];
 
 export function migrateDatabase(sqlite: Database.Database): void {
@@ -251,6 +256,16 @@ function migrateDurableAgentExecutions(sqlite: Database.Database): void {
   addColumnIfMissing(sqlite, "local_agent_sessions", "grader_commands", "text not null default '[]'");
   addColumnIfMissing(sqlite, "local_agent_sessions", "grader_results", "text not null default '[]'");
   addColumnIfMissing(sqlite, "local_agent_sessions", "process_id", "integer");
+}
+
+function migrateLocalAgentAuthority(sqlite: Database.Database): void {
+  addColumnIfMissing(sqlite, "local_agent_sessions", "execution_owner", "text not null default 'legacy'");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "workspace_mode", "text not null default 'checkout'");
+  addColumnIfMissing(sqlite, "local_agent_sessions", "write_mode", "text");
+  sqlite.exec(`
+    create index if not exists local_agent_sessions_execution_owner_idx
+      on local_agent_sessions(execution_owner, status, updated_at desc);
+  `);
 }
 
 function addColumnIfMissing(

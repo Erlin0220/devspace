@@ -70,6 +70,62 @@ assert.deepEqual(store.list({ workspaceRoot: join(root, "other") }), []);
     [created.id, createdFromOtherStore.id].sort(),
   );
 
+  const reviewRecord = store.create({
+    workspaceId: "ws_review",
+    workspaceRoot: join(root, "review-project"),
+    profileName: "reviewer",
+    provider: "codex",
+  });
+  store.update(reviewRecord.id, { status: "awaiting_review" });
+  assert.equal(store.updateIfStatus(reviewRecord.id, "awaiting_review", { status: "idle" })?.status, "idle");
+  assert.equal(store.updateIfStatus(reviewRecord.id, "awaiting_review", { status: "error" }), undefined);
+
+  const capacityRoot = join(root, "capacity-project");
+  for (const owner of ["personal-runtime", "cli-daemon"]) {
+    const active = store.create({
+      workspaceId: "ws_capacity",
+      workspaceRoot: capacityRoot,
+      profileName: "reviewer",
+      provider: "codex",
+      executionOwner: owner,
+    });
+    store.update(active.id, { status: "running" });
+  }
+  const third = store.createWithCapacity({
+    workspaceId: "ws_capacity",
+    workspaceRoot: capacityRoot,
+    profileName: "reviewer",
+    provider: "codex",
+    executionOwner: "personal-runtime",
+  }, 3);
+  assert.ok(third);
+  assert.equal(otherStore.createWithCapacity({
+    workspaceId: "ws_capacity",
+    workspaceRoot: capacityRoot,
+    profileName: "reviewer",
+    provider: "codex",
+    executionOwner: "cli-daemon",
+  }, 3), undefined);
+  store.update(third!.id, { status: "idle" });
+  const resumable = store.create({
+    workspaceId: "ws_capacity",
+    workspaceRoot: capacityRoot,
+    profileName: "reviewer",
+    provider: "codex",
+    executionOwner: "personal-runtime",
+  });
+  store.update(resumable.id, { status: "idle" });
+  assert.equal(store.claimRunWithCapacity(resumable.id, "idle", "personal-runtime", 3), "claimed");
+  const blocked = store.create({
+    workspaceId: "ws_capacity",
+    workspaceRoot: capacityRoot,
+    profileName: "reviewer",
+    provider: "codex",
+    executionOwner: "cli-daemon",
+  });
+  store.update(blocked.id, { status: "idle" });
+  assert.equal(otherStore.claimRunWithCapacity(blocked.id, "idle", "cli-daemon", 3), "capacity");
+
   const legacyStateDir = join(root, "legacy-state");
   mkdirSync(legacyStateDir, { recursive: true });
   const legacy = new Database(databasePath(legacyStateDir));
@@ -125,6 +181,9 @@ assert.deepEqual(store.list({ workspaceRoot: join(root, "other") }), []);
   const legacyRecord = upgradedStore.getById("agt_legacy");
   assert.equal(legacyRecord?.error, "old error");
   assert.equal(legacyRecord?.effort, "high");
+  assert.equal(legacyRecord?.executionOwner, "legacy");
+  assert.equal(legacyRecord?.workspaceMode, "checkout");
+  assert.equal(legacyRecord?.writeMode, undefined);
   assert.equal(legacyRecord?.errorCode, undefined);
   assert.equal(legacyRecord?.errorRetryable, undefined);
   const upgradedRecord = upgradedStore.update("agt_legacy", {

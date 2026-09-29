@@ -95,6 +95,11 @@ assert.notEqual(
   "Qoder CLI runtimes must remain agent-owned",
 );
 assert.match(driver.runtimeKey(context), /^qoder-native-cli:/);
+assert.doesNotThrow(() => driver.cleanupInterruptedProcess({
+  agentId: "agt_legacy",
+  processId: process.pid,
+  executionOwner: "legacy",
+}), "legacy Qoder cleanup without persisted session evidence must never attempt PID termination");
 
 const root = await mkdtemp(join(tmpdir(), "devspace-qoder-cli-test-"));
 const workspaceRoot = join(root, "workspace");

@@ -51,6 +51,7 @@ const DEFAULT_DAEMON_SHUTDOWN_TIMEOUT_MS = 10_000;
 export interface LocalAgentDaemonManager {
   start(input: StartLocalAgentInput): Promise<Result<LocalAgentRecord, AgentStartError>>;
   continue(agentId: string, prompt: string, overrides: RunOverrides | undefined, scope: LocalAgentWorkspaceScope): Promise<Result<LocalAgentRecord, AgentContinueError>>;
+  review(agentId: string, action: import("./local-agent-manager.js").AgentReviewAction, note: string | undefined, scope: LocalAgentWorkspaceScope): Promise<Result<LocalAgentRecord, AgentContinueError>>;
   get(agentId: string, scope: LocalAgentWorkspaceScope): Result<LocalAgentRecord, AgentLookupError>;
   list(scope: LocalAgentWorkspaceScope): Result<LocalAgentRecord[], AgentListError>;
   evictIdle(now?: number): Promise<void>;
@@ -301,6 +302,13 @@ export class LocalAgentDaemon {
           request.params.id,
           request.params.prompt,
           request.params.overrides,
+          request.params.scope,
+        ));
+      case "agent.review":
+        return unwrapManagerResult(await this.manager.review(
+          request.params.id,
+          request.params.action,
+          request.params.note,
           request.params.scope,
         ));
       case "agent.get":

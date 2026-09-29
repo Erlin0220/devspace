@@ -5,7 +5,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { promisify } from "node:util";
-import { execFile } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
 import {
   AgentProviderExecutionError,
   AgentProviderProtocolError,
@@ -263,6 +263,69 @@ export class QoderCliLocalAgentDriver implements LocalAgentDriver {
     });
   }
 
+  cleanupInterruptedProcess(input: {
+    agentId: string;
+    processId: number;
+    executionOwner?: string;
+    providerSessionId?: string;
+  }): void {
+    if (process.platform !== "win32") return;
+    if (input.executionOwner === "legacy" && !input.providerSessionId) return;
+    const powershell = resolvePowerShell7Command(this.env);
+    if (!powershell) {
+      if (input.executionOwner === "legacy") return;
+      throw new Error("PowerShell 7 is required to verify an interrupted Qoder process before cleanup.");
+    }
+    const marker = input.executionOwner === "legacy"
+      ? "devspace-qoder-"
+      : `devspace-qoder-${input.agentId}-`;
+    const script = [
+      "$ErrorActionPreference='Stop'",
+      "$pidValue=[int]$env:DEVSPACE_QODER_ORPHAN_PID",
+      "$process=Get-CimInstance Win32_Process -Filter ('ProcessId = ' + $pidValue)",
+      "if(-not $process){ exit 0 }",
+      "$marker=$env:DEVSPACE_QODER_ORPHAN_MARKER",
+      "if($process.Name -notin @('pwsh.exe','powershell.exe')){ exit 42 }",
+      "if(-not $process.CommandLine -or -not $process.CommandLine.Contains($marker) -or -not $process.CommandLine.Contains('run.ps1')){ exit 42 }",
+      "$legacySession=$env:DEVSPACE_QODER_ORPHAN_SESSION",
+      "if($legacySession){",
+      "  $match=[regex]::Match($process.CommandLine, '-File\\s+(?:\"([^\"]+run\\.ps1)\"|([^\\s]+run\\.ps1))', 'IgnoreCase')",
+      "  if(-not $match.Success){ exit 42 }",
+      "  $scriptPath=if($match.Groups[1].Success){ $match.Groups[1].Value } else { $match.Groups[2].Value }",
+      "  $configPath=Join-Path (Split-Path -Parent $scriptPath) 'run.json'",
+      "  if(-not (Test-Path -LiteralPath $configPath -PathType Leaf)){ exit 42 }",
+      "  $config=Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json",
+      "  $sessionMatch=@($config.args | Where-Object { [string]$_ -eq $legacySession }).Count -gt 0",
+      "  if(-not $sessionMatch){ exit 42 }",
+      "}",
+      "& (Join-Path $env:SystemRoot 'System32\\taskkill.exe') /pid $pidValue /T /F | Out-Null",
+      "exit $LASTEXITCODE",
+    ].join("; ");
+    const result = spawnSync(powershell, [
+      "-NoLogo",
+      "-NoProfile",
+      "-NonInteractive",
+      "-EncodedCommand",
+      Buffer.from(script, "utf16le").toString("base64"),
+    ], {
+      windowsHide: true,
+      timeout: 15_000,
+      encoding: "utf8",
+      env: {
+        ...this.env,
+        DEVSPACE_QODER_ORPHAN_PID: String(input.processId),
+        DEVSPACE_QODER_ORPHAN_MARKER: marker,
+        DEVSPACE_QODER_ORPHAN_SESSION: input.executionOwner === "legacy" ? input.providerSessionId : "",
+      },
+    });
+    if (result.status === 0) return;
+    if (result.status === 42) {
+      if (input.executionOwner === "legacy") return;
+      throw new Error(`Refusing to terminate process ${input.processId}: it is not the interrupted Qoder agent ${input.agentId}.`);
+    }
+    throw new Error(`Unable to clean up interrupted Qoder process ${input.processId}.`);
+  }
+
   private resolveCommand(): string | undefined {
     if (!this.commandResolved) {
       this.resolvedCommand = this.commandResolver(this.env);
@@ -350,7 +413,7 @@ export function parseQoderGoalStatus(output: string): QoderGoalStatus {
 async function runInteractiveQoderGoal(
   options: InteractiveQoderGoalOptions,
 ): Promise<{ exitCode: number | null; stdout: string; stderr: string; processId: number }> {
-  const runDir = await mkdtemp(join(tmpdir(), "devspace-qoder-"));
+  const runDir = await mkdtemp(join(tmpdir(), `devspace-qoder-${options.agentId}-`));
   const configPath = join(runDir, "run.json");
   const scriptPath = join(runDir, "run.ps1");
   await writeFile(configPath, JSON.stringify({

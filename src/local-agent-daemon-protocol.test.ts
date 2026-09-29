@@ -10,7 +10,7 @@ import {
 
 const request = decodeLocalAgentDaemonRequest({
   requestId: "req_1",
-  protocolVersion: 3,
+  protocolVersion: 4,
   authToken: "test-secret",
   method: "agent.start",
   params: {
@@ -26,9 +26,26 @@ if (request.method !== "agent.start") throw new Error("expected agent.start requ
 assert.equal(request.params.writeMode, "read_only");
 assert.match(encodeLocalAgentDaemonRequest(request), /"method":"agent.start"/);
 
+const reviewRequest = decodeLocalAgentDaemonRequest({
+  requestId: "req_review",
+  protocolVersion: 4,
+  authToken: "test-secret",
+  method: "agent.review",
+  params: {
+    id: "agt_review",
+    action: "retry",
+    note: "fix remaining grader failure",
+    scope: { workspaceId: "ws_test", workspaceRoot: "/tmp/project" },
+  },
+});
+assert.equal(reviewRequest.method, "agent.review");
+if (reviewRequest.method !== "agent.review") throw new Error("expected agent.review request");
+assert.equal(reviewRequest.params.action, "retry");
+assert.equal(reviewRequest.params.note, "fix remaining grader failure");
+
 const whitespaceRequest = decodeLocalAgentDaemonRequest({
   requestId: "req_whitespace",
-  protocolVersion: 3,
+  protocolVersion: 4,
   authToken: "test-secret",
   method: "agent.start",
   params: {
@@ -43,7 +60,7 @@ assert.equal(whitespaceRequest.params.prompt, "  keep prompt whitespace  \n");
 
 const directRequest = decodeLocalAgentDaemonRequest({
   requestId: "req_direct",
-  protocolVersion: 3,
+  protocolVersion: 4,
   authToken: "test-secret",
   method: "agent.start",
   params: {
@@ -58,7 +75,7 @@ assert.equal(directRequest.params.workspaceId, undefined);
 assert.throws(
   () => decodeLocalAgentDaemonRequest({
     requestId: "req_2",
-    protocolVersion: 3,
+    protocolVersion: 4,
     authToken: "test-secret",
     method: "agent.start",
     params: { target: "reviewer", prompt: "" },
@@ -85,7 +102,7 @@ assert.equal(directRecord.workspaceId, undefined);
 
 const response = decodeLocalAgentDaemonResponse({
   requestId: "req_1",
-  protocolVersion: 3,
+  protocolVersion: 4,
   ok: true,
   result: record,
 });
@@ -93,7 +110,7 @@ assert.equal(response.ok, true);
 
 const errorResponse = decodeLocalAgentDaemonResponse(JSON.parse(encodeLocalAgentDaemonResponse({
   requestId: "req_error",
-  protocolVersion: 3,
+  protocolVersion: 4,
   ok: false,
   error: {
     code: "PROVIDER_UNAVAILABLE",

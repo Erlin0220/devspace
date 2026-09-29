@@ -1,7 +1,7 @@
 // One-time adaptation of Team DevSpace 15ce088 client/desktop-controller.mjs.
 // Presentation observes operations; no remote authorization or independent lifecycle state.
 const activityText = { suspend: '正在暂停服务…', resume: '正在恢复服务…', restart: '正在重启服务…',
-  repair: '正在修复桌面入口…', 'project-root': '正在切换项目目录…',
+  repair: '正在修复桌面入口…', 'project-root': '正在切换项目目录…', 'source-root': '正在绑定 Personal 源码目录…',
   'update-check': '正在检查官方稳定版…', 'update-prepare': '正在重放个人定制并验证候选版本…', 'update-apply': '正在交给独立安装器…' };
 const optional = (listener, value) => { try { Promise.resolve(listener(value)).catch(() => {}); } catch {} };
 
@@ -36,7 +36,7 @@ export function createDesktopController(operations, { intervalMs = 5000, noticeT
       try { await pending?.catch(() => {}); await operations.exit(); return { stopped: true }; }
       catch (error) { closing = false; activity = undefined; alert = error.message; publish(); throw error; }
     }
-    if (['diagnostics', 'logs', 'choose-folder'].includes(action)) {
+    if (['diagnostics', 'logs', 'choose-folder', 'choose-source-folder'].includes(action)) {
       if (!operations[action]) throw new Error('不支持的操作');
       if (!utilities.has(action)) utilities.set(action, Promise.resolve().then(() => operations[action]({ ...input, signal: abort.signal }))
         .finally(() => utilities.delete(action)));

@@ -2,12 +2,12 @@ const $ = id => document.getElementById(id);
 const fragment = location.hash.slice(1);
 if (/^[A-Za-z0-9_-]{43}$/.test(fragment)) { sessionStorage.setItem('personal-control', fragment); history.replaceState(null, '', location.pathname); }
 const capability = sessionStorage.getItem('personal-control');
-let current, requestPending = false, requestAction, shownVersion, stopped = false, rootDraft = false;
+let current, requestPending = false, requestAction, shownVersion, stopped = false, rootDraft = false, sourceRootDraft = false;
 const titles = { overview: '概览', settings: '本机设置', updates: '软件更新', diagnostics: '诊断与修复' };
 function feedback(message, error = false) { $('feedback').textContent = message ?? ''; $('feedback').hidden = !message; $('feedback').dataset.error = String(error); }
 async function api(path, body) {
   const response = await fetch(path, { method: body ? 'POST' : 'GET', headers: { Authorization: `Bearer ${capability ?? ''}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
-    body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(body?.action === 'choose-folder' ? 300000 : 15000) });
+    body: body ? JSON.stringify(body) : undefined, signal: AbortSignal.timeout(['choose-folder', 'choose-source-folder'].includes(body?.action) ? 300000 : 15000) });
   const value = await response.json();
   if (!response.ok) { if (response.status === 401) stopped = true; throw new Error(value.error ?? `请求失败 (${response.status})`); }
   return value;
@@ -19,6 +19,7 @@ function render(state) {
   $('checked-at').textContent = state.checkedAt ? `最近检查 ${new Date(state.checkedAt).toLocaleTimeString()}` : '';
   $('project-root').textContent = state.projectRoot ?? '沿用 upstream 已配置目录';
   if (!rootDraft && document.activeElement !== $('root-input')) $('root-input').value = state.projectRoot ?? '';
+  if (!sourceRootDraft && document.activeElement !== $('source-root-input')) $('source-root-input').value = state.sourceRoot ?? '';
   $('version').textContent = state.version ? `${state.version} stable + Personal Overlay` : '—';
   $('runtime-url').textContent = state.endpoint ?? '';
   $('extensions').textContent = `API Token：${state.apiTokenConfigured ? '已配置' : '未配置'} · CodeGraph：${state.codegraphEnabled ? '已启用' : '已关闭'}`;
@@ -57,7 +58,9 @@ async function action(name, input = {}) {
   requestPending = true; requestAction = name; if (current) render(current); if (name !== 'check') feedback('正在处理…');
   try { const result = await api('/api/action', { action: name, ...input });
     if (name === 'choose-folder' && result.projectRoot) { $('root-input').value = result.projectRoot; rootDraft = true; }
+    if (name === 'choose-source-folder' && result.sourceRoot) { $('source-root-input').value = result.sourceRoot; sourceRootDraft = true; }
     if (name === 'project-root') rootDraft = false;
+    if (name === 'source-root') sourceRootDraft = false;
     if (name === 'update-prepare') $('update-dialog').close();
     render(await api('/api/state'));
   } catch (error) { feedback(error.message, true); }
@@ -73,6 +76,8 @@ document.addEventListener('click', event => {
 $('close-dialog').addEventListener('click', () => $('update-dialog').close());
 $('root-input').addEventListener('input', () => { rootDraft = true; });
 $('root-form').addEventListener('submit', event => { event.preventDefault(); void action('project-root', { projectRoot: $('root-input').value }); });
+$('source-root-input').addEventListener('input', () => { sourceRootDraft = true; });
+$('source-root-form').addEventListener('submit', event => { event.preventDefault(); void action('source-root', { sourceRoot: $('source-root-input').value }); });
 $('diagnostics-button').addEventListener('click', async () => {
   try { $('diagnostics-output').textContent = JSON.stringify(await api('/api/diagnostics'), null, 2); $('diagnostics-output').hidden = false; }
   catch (error) { feedback(error.message, true); }

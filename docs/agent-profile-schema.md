@@ -73,6 +73,8 @@ provider: pi
 provider: cursor
 provider: copilot
 provider: grok
+provider: qoder
+provider: agy
 ```
 
 Unsupported or custom providers are rejected. DevSpace maps providers to their
@@ -85,6 +87,8 @@ native integration:
 - `cursor`: ACP
 - `copilot`: ACP
 - `grok`: Grok Build ACP (`grok agent stdio`)
+- `qoder`: the host-installed native Qoder CLI Goal workflow.
+- `agy`: the host-installed AGY CLI with stream-json conversation support.
 
 Codex is resolved from the user's environment rather than bundled with
 DevSpace. Run `codex login` normally before using it; set `CODEX_COMMAND` when
@@ -141,6 +145,10 @@ workspace-local `.devspace/agents` profiles are repository-controlled and cannot
 expand authority beyond `allowed`. Profiles that omit `writeMode` default to
 `allowed` even for providers whose raw-provider default is broader. Profiles
 requesting a mode that their provider cannot support fail before the turn is run.
+When the host requires isolated writable workers, `allowed` and `full_access`
+targets must run from a worktree workspace; the manager enforces this for both
+profiles and raw-provider targets. `read_only` targets cannot attach shell
+`graderCommands`, because graders execute outside the provider sandbox.
 
 ### `disabled`
 
@@ -171,6 +179,7 @@ devspace agents ls --json
 devspace agents targets --json
 devspace agents run <profile-or-provider> "<prompt>" --json
 devspace agents continue <id> "<prompt>" --json
+devspace agents review <id> <approve|retry|reject> [note] --json
 devspace agents show <id> --json
 ```
 
@@ -207,10 +216,24 @@ OpenCode uses one server across sessions, ACP providers use one process across
 sessions, while Claude and Pi keep one warm runtime per DevSpace agent. There is
 one active turn per agent; different agents may run concurrently.
 
-If the daemon restarts during a turn, persisted `starting` and `running` agents
-become `error` with a restart message. The next `agents continue <id>` request can
-continue the provider session when that provider supports resumption. The MCP
-server can restart independently because it does not own this state.
+If an execution owner restarts during a turn, only its own persisted `starting`
+and `running` agents become `error` with a restart message. The next
+`agents continue <id>` request can continue the provider session when that
+provider supports resumption and transfers execution ownership to the manager
+that starts the new turn. Personal Web Runtime and the CLI daemon can therefore
+share the SQLite store without reconciling each other's active executions.
+Legacy pre-owner rows are claimed atomically by whichever current manager starts
+first, then reconciled exactly once. Starting a new turn also uses a SQLite
+compare-and-swap on the persisted status, so two managers cannot concurrently
+continue the same logical agent.
+The default per-workspace concurrency ceiling is also reserved atomically in
+SQLite for both starts and continues, rather than enforced by per-process
+in-memory counters.
+
+Writable isolation is enforced inside `LocalAgentManager`, not trusted from an
+MCP or CLI request. The manager derives checkout vs linked-worktree state from
+Git at the authorized workspace root before every writable turn and records the
+observed mode as durable audit metadata.
 
 ## Current non-goals
 
@@ -218,6 +241,7 @@ server can restart independently because it does not own this state.
 - Inferring changed files, tests, or diffs from worker output.
 - Exposing raw provider transcripts by default.
 - Teaching the model provider-specific CLIs.
-- First-class MCP agent tools. Future tools should call the same local agent
-  daemon used by `devspace agents` rather than executing providers in the MCP
-  server process.
+- A second agent execution engine for Personal MCP. Its first-class MCP tools
+  call the same `LocalAgentManager`/store/runtime abstractions as the CLI daemon;
+  Personal keeps that manager in its already long-lived Runtime instead of
+  adding another local IPC daemon.

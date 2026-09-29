@@ -115,6 +115,21 @@ export class LocalAgentClient {
     return decodeRequestResult(result, "agent.continue", decodeAgentRecord);
   }
 
+  async review(
+    agentId: string,
+    action: import("./local-agent-manager.js").AgentReviewAction,
+    note: string | undefined,
+    scope: LocalAgentWorkspaceScope,
+  ): Promise<BetterResult<LocalAgentRecord, AgentContinueError | AgentDaemonError>> {
+    const result = await this.request("agent.review", {
+      id: agentId,
+      action,
+      ...(note ? { note } : {}),
+      scope,
+    });
+    return decodeRequestResult(result, "agent.review", decodeAgentRecord);
+  }
+
   async get(
     agentId: string,
     scope: LocalAgentWorkspaceScope,
@@ -393,16 +408,27 @@ export class LocalAgentClient {
         message: "Local agent daemon is not running.",
       }));
     }
-    const response = await sendRequest(this.endpoint, {
+    const send = (protocolVersion: number) => sendRequest(this.endpoint, {
       requestId: randomUUID(),
-      protocolVersion: LOCAL_AGENT_DAEMON_PROTOCOL_VERSION,
-      authToken: authToken.value,
+      protocolVersion,
+      authToken: authToken.value!,
       method,
       params,
     } as LocalAgentDaemonRequest, this.requestTimeoutMs);
+    let response = await send(LOCAL_AGENT_DAEMON_PROTOCOL_VERSION);
     if (response.isErr()) return response;
     if (!response.value.ok) {
-      const error = decodeRemoteError(response.value.error, method);
+      let error = decodeRemoteError(response.value.error, method);
+      if (
+        error.code === "DAEMON_PROTOCOL_MISMATCH"
+        && response.value.protocolVersion > 0
+        && response.value.protocolVersion < LOCAL_AGENT_DAEMON_PROTOCOL_VERSION
+      ) {
+        response = await send(response.value.protocolVersion);
+        if (response.isErr()) return response;
+        if (response.value.ok) return Result.ok(response.value.result);
+        error = decodeRemoteError(response.value.error, method);
+      }
       if (isAgentDaemonError(error)) return Result.err(error);
       return Result.err(new AgentDaemonInvalidResponseError({
         code: "DAEMON_INVALID_RESPONSE",
@@ -624,6 +650,7 @@ function isRequestError(
   switch (method) {
     case "agent.start":
     case "agent.continue":
+    case "agent.review":
       return category === "target"
         || category === "scope"
         || category === "conflict"

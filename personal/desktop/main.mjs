@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createInterface } from 'node:readline';
 import { atomicJson, readJson, stateHome, statePath } from '../state.mjs';
-import { approvedProjectRoot, readPersonalAuth, readPersonalConfig } from '../config.mjs';
+import { approvedPersonalSourceRoot, approvedProjectRoot, bindPersonalSourceRoot, readPersonalAuth, readPersonalConfig } from '../config.mjs';
 import { runtimeConfig, runtimeSnapshot, waitForRuntime } from '../runtime.mjs';
 import { readUpstreamBaseline } from '../upstream.mjs';
 import { discoverStable, prepareStable } from '../upgrade.mjs';
@@ -31,15 +31,21 @@ async function candidateStatus(home, attempt) {
     verifiedAt: manifest?.verifiedAt,
     tests: manifest?.stages };
 }
+async function currentInstallAttempt(home) {
+  const attempt = await readJson(statePath(home, 'installAttempt'), null).catch(() => null);
+  if (!attempt || ['installed', 'failed'].includes(attempt.status)) return attempt;
+  return (await import('../install.mjs')).reconcileInstallAttempt(home, attempt);
+}
 export async function status(home = stateHome()) {
   const [runtime, auth, installation] = await Promise.all([
     runtimeSnapshot(home),
     readPersonalAuth(home),
-    readJson(statePath(home, 'installAttempt'), null).catch(() => null),
+    currentInstallAttempt(home),
   ]);
   const { config, personal } = runtime;
   return { running: runtime.running, paused: personal.paused,
     version: baseline.version, projectRoot: effectiveProjectRoot(personal, config),
+    sourceRoot: personal.sourceRoot,
     allowedRoots: config.allowedRoots, endpoint: `${runtime.origin}/mcp`,
     apiTokenConfigured: Boolean(auth.apiToken), codegraphEnabled: personal.codegraph?.enabled === true,
     runningProcesses: runtime.runningProcesses,
@@ -108,6 +114,12 @@ export function operations(home = stateHome()) {
       catch (error) { await stopReady(home).catch(() => {}); await atomicJson(statePath(home, 'personal'), before); if (!paused) await startReady(home); throw error; }
     },
     'choose-folder': async input => chooseFolder({ ...input, projectRoot: await currentProjectRoot(home) }),
+    'source-root': async ({ sourceRoot }) => bindPersonalSourceRoot(home, sourceRoot),
+    'choose-source-folder': async input => {
+      const personal = await readPersonalConfig(home);
+      const selected = await chooseFolder({ ...input, projectRoot: personal.sourceRoot ?? await currentProjectRoot(home) });
+      return approvedPersonalSourceRoot(selected);
+    },
     logs: () => openLogs(home),
     diagnostics: async () => {
       const safe = async operation => operation().catch(error => ({ error: error.message }));
@@ -116,13 +128,16 @@ export function operations(home = stateHome()) {
         runtime: await safe(() => status(home)),
         jobs: Object.fromEntries(await Promise.all(['runtime', 'desktop', 'installer'].map(async component => [component, await safe(() => jobStatus(home, component))]))),
         install: await readJson(statePath(home, 'install'), null).catch(error => ({ error: error.message })),
-        attempt: await readJson(statePath(home, 'installAttempt'), null).catch(error => ({ error: error.message })),
+        attempt: await currentInstallAttempt(home).catch(error => ({ error: error.message })),
         desktop: await readJson(statePath(home, 'desktopStatus'), null).catch(error => ({ error: error.message })) };
     },
     'update-check': async ({ signal }) => { const release = await discoverStable({ signal }); return { ...release, available: semver.gt(release.version, baseline.version) }; },
     'update-prepare': async ({ onProgress }) => {
       const personal = await readPersonalConfig(home);
-      const result = await prepareStable({ root: personal.sourceRoot ?? packageRoot, onProgress });
+      if (!personal.sourceRoot) {
+        throw new Error('未配置 Personal 源码目录；请先使用 devspace-personal install <DevSpace 源码目录> 绑定 sourceRoot');
+      }
+      const result = await prepareStable({ root: personal.sourceRoot, onProgress });
       const review = { schema: 1, status: 'tested-awaiting-review', candidate: result.candidate, candidateHead: result.candidateHead,
         candidatePayloadSha256: result.candidatePayloadSha256,
         preparedAt: new Date().toISOString() };

@@ -7,7 +7,7 @@ import {
   LocalAgentDaemonAlreadyRunningError,
   localAgentDaemonPaths,
 } from "./local-agent-daemon-lifecycle.js";
-import { LocalAgentManager } from "./local-agent-manager.js";
+import { DEFAULT_MAX_ACTIVE_SUBAGENTS_PER_WORKSPACE, LocalAgentManager } from "./local-agent-manager.js";
 import { LocalAgentRuntimePool } from "./local-agent-runtime-pool.js";
 import { LocalAgentStore } from "./local-agent-store.js";
 
@@ -34,11 +34,18 @@ const manager = new LocalAgentManager({
   allowedRoots: config.allowedRoots,
   logger: log,
   subagents: resolveSubagentsConfig,
+  maxActiveTurnsPerWorkspace: DEFAULT_MAX_ACTIVE_SUBAGENTS_PER_WORKSPACE,
+  executionOwner: "cli-daemon",
+  requireWorktreeForWritable: true,
 });
 const daemon = new LocalAgentDaemon({
   stateDir: paths.stateDir,
   manager,
   onLockAcquired: () => {
+    const reconciledLegacy = manager.reconcileLegacyActiveRuns(
+      "DevSpace agent daemon upgraded while this legacy agent execution was running.",
+    );
+    if (reconciledLegacy.isErr()) throw reconciledLegacy.error;
     const reconciled = manager.reconcileActiveRuns();
     if (reconciled.isErr()) throw reconciled.error;
   },

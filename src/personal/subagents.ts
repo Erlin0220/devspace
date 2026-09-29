@@ -18,7 +18,6 @@ import type {
   LocalAgentRecord,
   LocalAgentWorkspaceScope,
 } from "../local-agent-store.js";
-import { localAgentProfileWriteMode } from "../local-agent-profiles.js";
 import type { WorkspaceRegistry } from "../workspaces.js";
 
 export interface PersonalSubagentClient {
@@ -113,17 +112,6 @@ export class PersonalSubagents {
       },
       async ({ workspaceId, target, prompt, mode, goalTurns, graderCommands, requireReview, maxAttempts }) => {
         const workspace = workspaces.getWorkspace(workspaceId);
-        const profile = workspace.agentProfiles.find((candidate) => candidate.name === target);
-        const writeMode = profile ? localAgentProfileWriteMode(profile) : undefined;
-        if (profile && writeMode !== "read_only" && workspace.mode !== "worktree") {
-          return {
-            content: [{
-              type: "text" as const,
-              text: `WRITABLE_PROFILE_REQUIRES_WORKTREE: Subagent profile ${profile.name} uses writeMode=${writeMode}. Open an isolated workspace with mode=worktree and run the profile there.`,
-            }],
-            isError: true,
-          };
-        }
         const input = {
           target,
           prompt,

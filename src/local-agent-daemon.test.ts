@@ -51,6 +51,15 @@ class FakeManager implements LocalAgentDaemonManager {
     return Result.ok({ ...record, status: "running" } as LocalAgentRecord);
   }
 
+  async review(
+    _agentId: string,
+    _action: "approve" | "retry" | "reject",
+    _note: string | undefined,
+    _scope: { workspaceId: string; workspaceRoot: string },
+  ) {
+    return Result.ok({ ...record, status: "idle" } as LocalAgentRecord);
+  }
+
   get(_id: string, _scope: { workspaceId: string; workspaceRoot: string }) {
     return Result.ok(record);
   }
@@ -237,7 +246,7 @@ const forceUpgradeServer = createNetServer((socket) => {
         ok: false,
         error: {
           code: "DAEMON_PROTOCOL_MISMATCH",
-          message: "Unsupported daemon protocol version 3; expected 1.",
+          message: "Unsupported daemon protocol version 4; expected 1.",
           retryable: false,
         },
       }));
@@ -274,10 +283,83 @@ const forceUpgradeClient = new LocalAgentClient({
 try {
   unwrap(await forceUpgradeClient.stopForUpgrade());
   await waitFor(() => !existsSync(forceUpgradePaths.lockPath));
-  assert.deepEqual(forceUpgradeMethods, ["daemon.stop:3", "daemon.stop:1"]);
+  assert.deepEqual(forceUpgradeMethods, ["daemon.stop:4", "daemon.stop:1"]);
 } finally {
   forceUpgradeLock.release();
   forceUpgradeServer.close();
+}
+
+const legacyAdminStateDir = join(root, "legacy-admin-state");
+await mkdir(legacyAdminStateDir, { recursive: true });
+const legacyAdminPaths = localAgentDaemonPaths(legacyAdminStateDir);
+ensureLocalAgentDaemonSecret(legacyAdminPaths);
+const legacyAdminMethods: string[] = [];
+const legacyAdminServer = createNetServer((socket) => {
+  let buffer = "";
+  socket.setEncoding("utf8");
+  socket.on("data", (chunk: string | Buffer) => {
+    buffer += chunk.toString();
+    const newline = buffer.indexOf("\n");
+    if (newline === -1) return;
+    const request = JSON.parse(buffer.slice(0, newline)) as {
+      requestId: string;
+      protocolVersion: number;
+      method: string;
+    };
+    legacyAdminMethods.push(`${request.method}:${request.protocolVersion}`);
+    if (request.protocolVersion !== 3) {
+      socket.end(encodeLocalAgentDaemonResponse({
+        requestId: request.requestId,
+        protocolVersion: 3,
+        ok: false,
+        error: {
+          code: "DAEMON_PROTOCOL_MISMATCH",
+          message: "Unsupported daemon protocol version 4; expected 3.",
+          retryable: false,
+        },
+      }));
+      return;
+    }
+    const result = request.method === "daemon.logs"
+      ? "legacy daemon log"
+      : {
+          state: request.method === "daemon.stop" ? "stopping" : "ready",
+          protocolVersion: 3,
+          pid: process.pid,
+          endpoint: legacyAdminPaths.endpoint,
+          startedAt: "now",
+          activeTurns: 0,
+          runtimeCount: 0,
+          clientConnections: 1,
+        };
+    socket.end(encodeLocalAgentDaemonResponse({
+      requestId: request.requestId,
+      protocolVersion: 3,
+      ok: true,
+      result,
+    }));
+  });
+});
+await new Promise<void>((resolveListen, rejectListen) => {
+  legacyAdminServer.once("error", rejectListen);
+  legacyAdminServer.listen(legacyAdminPaths.endpoint, resolveListen);
+});
+const legacyAdminClient = new LocalAgentClient({
+  stateDir: legacyAdminStateDir,
+  requestTimeoutMs: 500,
+  spawnDaemon: () => { throw new Error("legacy admin commands must not replace the daemon"); },
+});
+try {
+  assert.equal(unwrap(await legacyAdminClient.status()).protocolVersion, 3);
+  assert.equal(unwrap(await legacyAdminClient.logs(10)), "legacy daemon log");
+  assert.equal(unwrap(await legacyAdminClient.stop()).state, "stopping");
+  assert.deepEqual(legacyAdminMethods, [
+    "daemon.status:4", "daemon.status:3",
+    "daemon.logs:4", "daemon.logs:3",
+    "daemon.stop:4", "daemon.stop:3",
+  ]);
+} finally {
+  await new Promise<void>((resolveClose) => legacyAdminServer.close(() => resolveClose()));
 }
 
 const upgradeStateDir = join(root, "upgrade-state");
@@ -307,7 +389,7 @@ const legacyServer = createNetServer((socket) => {
         ok: false,
         error: {
           code: "DAEMON_PROTOCOL_MISMATCH",
-          message: "Unsupported daemon protocol version 3; expected 1.",
+          message: "Unsupported daemon protocol version 4; expected 1.",
           retryable: false,
         },
       }));
@@ -361,10 +443,10 @@ const upgradeClient = new LocalAgentClient({
   },
 });
 try {
-  assert.equal(unwrap(await upgradeClient.ensureReady()).protocolVersion, 3);
+  assert.equal(unwrap(await upgradeClient.ensureReady()).protocolVersion, 4);
   assert.equal(replacementSpawns, 1);
   assert.equal(spawnedBeforeLegacyLockReleased, false);
-  assert.deepEqual(legacyMethods.slice(0, 3), ["hello:3", "hello:1", "daemon.stop:1"]);
+  assert.deepEqual(legacyMethods.slice(0, 3), ["hello:4", "hello:1", "daemon.stop:1"]);
 } finally {
   legacyLock.release();
   await replacementDaemon.close();
@@ -457,11 +539,11 @@ const timeoutServer = createNetServer((socket) => {
     if (request.method !== "hello") return;
     socket.end(encodeLocalAgentDaemonResponse({
       requestId: request.requestId,
-      protocolVersion: 3,
+      protocolVersion: 4,
       ok: true,
       result: {
         state: "ready",
-        protocolVersion: 3,
+        protocolVersion: 4,
         pid: process.pid,
         endpoint: timeoutPaths.endpoint,
         startedAt: "now",
@@ -503,7 +585,7 @@ const invalidServer = createNetServer((socket) => {
     if (!buffer.includes("\n")) return;
     socket.end(encodeLocalAgentDaemonResponse({
       requestId: "wrong_request_id",
-      protocolVersion: 3,
+      protocolVersion: 4,
       ok: true,
       result: {},
     }));
@@ -557,7 +639,7 @@ try {
 
   const unauthorized = await sendRawRequest(socketDaemon.paths.endpoint, JSON.stringify({
     requestId: "unauthorized",
-    protocolVersion: 3,
+    protocolVersion: 4,
     authToken: "wrong-secret",
     method: "hello",
     params: {},
