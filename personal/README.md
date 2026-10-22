@@ -35,9 +35,14 @@ CodeGraph is optional. Opening a workspace never waits for it. The first
 `.codegraph/` index and then queries it; an existing index is left to CodeGraph's
 own sync/version logic. Missing executables, failed indexes and tool timeouts are
 reported by the optional CodeGraph tool without delaying core workspace/file/command tools.
-The desktop has no enterprise gateway, enrollment, device binding, fleet
+The standalone desktop has no enterprise gateway, enrollment, device binding, fleet
 policy, tunnel owner or dependency on a Team installation. A user-managed external
 tunnel may still point at the Personal MCP endpoint; it is never reconfigured here.
+
+The optional, separately deployed [Personal Fleet Gateway](fleet/README.md) adds
+one host endpoint for several independent Runtimes. It binds workspaces and process
+sessions to their original device and never migrates or schedules tasks. It does
+not replace the standalone desktop, own a tunnel or depend on a Team installation.
 
 ## Local files and commands
 

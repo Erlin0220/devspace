@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "personal-devspace-fleet",
+  "main": "worker.mjs",
+  "account_id": "4498bbe09d0c6dc868f53aff6391ca6e",
+  "compatibility_date": "2026-07-30",
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [
+    { "pattern": "personal-devspace-fleet.568920429.xyz", "custom_domain": true }
+  ],
+  "durable_objects": {
+    "bindings": [{ "name": "FLEET", "class_name": "PersonalFleet" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["PersonalFleet"] }],
+  "observability": { "enabled": false }
+}

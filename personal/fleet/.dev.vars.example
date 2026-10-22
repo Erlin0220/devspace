@@ -1,0 +1,4 @@
+# Local-only configuration. Copy to .dev.vars and fill privately.
+# Both values intentionally fail validation until configured.
+FLEET_CLIENT_TOKEN=""
+FLEET_DEVICE_BINDINGS="[]"

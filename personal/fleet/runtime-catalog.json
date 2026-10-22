@@ -1,0 +1,600 @@
+[
+  {
+    "name": "open_workspace",
+    "description": "Default entry point for software-development work on the user's real local project. Use this whenever a coding, repository, debugging, implementation, build/test, Git, or continued-development request needs local project context and no usable workspaceId exists, even if the user did not explicitly ask for DevSpace. During continued work, reuse the existing workspaceId instead of calling this tool again. By default this uses the actual checkout; set mode=\"worktree\" for isolated or parallel work.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "description": "Absolute path, or a leading-tilde home path such as ~/project, to a project directory inside an allowed root."
+        },
+        "mode": {
+          "description": "Defaults to checkout, which works in the actual directory. Use worktree for isolated or parallel Git work.",
+          "type": "string",
+          "enum": [
+            "checkout",
+            "worktree"
+          ]
+        },
+        "baseRef": {
+          "description": "Git ref to base a worktree on. Only used with mode=\"worktree\". Defaults to HEAD.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string"
+        },
+        "root": {
+          "type": "string"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "checkout",
+            "worktree"
+          ]
+        },
+        "sourceRoot": {
+          "type": "string"
+        },
+        "worktree": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "baseRef": {
+              "type": "string"
+            },
+            "baseSha": {
+              "type": "string"
+            },
+            "dirtySource": {
+              "type": "boolean"
+            },
+            "detached": {
+              "type": "boolean"
+            },
+            "managed": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "path",
+            "baseRef",
+            "baseSha",
+            "dirtySource",
+            "detached",
+            "managed"
+          ],
+          "additionalProperties": false
+        },
+        "agentsFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "content": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "availableAgentsFiles": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "skills": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "path": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "name",
+              "description",
+              "path"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "agentProviders": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "effort": {
+                "type": "string"
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "agents": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              },
+              "provider": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string"
+              },
+              "effort": {
+                "type": "string"
+              },
+              "writeMode": {
+                "type": "string",
+                "enum": [
+                  "read_only",
+                  "allowed",
+                  "full_access"
+                ]
+              }
+            },
+            "required": [
+              "name",
+              "description",
+              "provider"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "skillDiagnostics": {
+          "type": "array",
+          "items": {}
+        },
+        "instruction": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "root",
+        "mode",
+        "instruction"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "read",
+    "description": "Read a file in a workspace. Use this for file inspection instead of shell commands like cat or sed. Use this tool to inspect relevant AGENTS.md or CLAUDE.md files listed by open_workspace before working in nested directories. If available skills were returned and a task matches one, read that skill's path before proceeding. Skill paths may be outside the workspace; only advertised SKILL.md files and files under already-loaded skill directories are readable.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Workspace to use. Reuse the current project's workspaceId."
+        },
+        "path": {
+          "type": "string",
+          "description": "File path to read, relative to the workspace root. May also be an advertised skill path from open_workspace skills."
+        },
+        "offset": {
+          "description": "1-indexed line number to start reading from.",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        },
+        "limit": {
+          "description": "Maximum number of lines to read.",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "workspaceId",
+        "path"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "string",
+          "description": "Model-readable result text for follow-up reasoning and plain MCP hosts."
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true
+    }
+  },
+  {
+    "name": "apply_patch",
+    "description": "Apply one Codex-style patch in a workspace. Supports adding, overwriting, updating, deleting, and moving files. Use this for all file modifications. Paths must be relative to the workspace.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Workspace to use. Reuse the current project's workspaceId."
+        },
+        "patch": {
+          "type": "string",
+          "description": "Patch text enclosed by *** Begin Patch and *** End Patch markers."
+        }
+      },
+      "required": [
+        "workspaceId",
+        "patch"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "string",
+          "description": "Model-readable result text for follow-up reasoning and plain MCP hosts."
+        },
+        "additions": {
+          "type": "number"
+        },
+        "removals": {
+          "type": "number"
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "previousPath": {
+                "type": "string"
+              },
+              "operation": {
+                "type": "string",
+                "enum": [
+                  "add",
+                  "update",
+                  "delete",
+                  "move"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "operation"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "result",
+        "additions",
+        "removals",
+        "files"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": false
+    }
+  },
+  {
+    "name": "exec_command",
+    "description": "Run a command in a workspace using DevSpace's platform-selected shell. Returns its result when it exits during the yield window, otherwise returns a sessionId for write_stdin. Use this for file inspection, tests, builds, package scripts, and long-running processes. On host/transport-level rejection or timeout, follow the server command-recovery policy; do not treat one failed call as evidence that exec_command is globally unavailable.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Workspace to use. Reuse the current project's workspaceId."
+        },
+        "cmd": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Command text passed to the platform-selected shell. On Windows, DevSpace uses ComSpec (normally cmd.exe); use cmd.exe syntax such as NUL to discard output. PowerShell syntax such as $null only works when PowerShell is explicitly invoked."
+        },
+        "tty": {
+          "description": "Allocate a pseudo-terminal for interactive commands. Defaults to false.",
+          "type": "boolean"
+        },
+        "columns": {
+          "description": "Initial PTY width. Defaults to 80.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "rows": {
+          "description": "Initial PTY height. Defaults to 24.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "workingDirectory": {
+          "description": "Working directory relative to the workspace root. Defaults to the workspace root.",
+          "type": "string"
+        },
+        "waitTimeMs": {
+          "description": "Milliseconds to wait before returning. Defaults to 10000. Commands belong to this runtime, not persistent desktop services.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000
+        },
+        "yieldTimeMs": {
+          "description": "Milliseconds to wait before returning a running session. Defaults to 10000.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000
+        },
+        "maxOutputTokens": {
+          "description": "Approximate output token budget. Defaults to 10000.",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 100000
+        }
+      },
+      "required": [
+        "workspaceId",
+        "cmd"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "string",
+          "description": "Model-readable result text for follow-up reasoning and plain MCP hosts."
+        },
+        "sessionId": {
+          "type": "number"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "exitCode": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "signal": {
+          "type": "string"
+        },
+        "wallTimeMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "outputTruncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "result",
+        "running",
+        "wallTimeMs",
+        "outputTruncated"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "write_stdin",
+    "description": "Poll or write characters to a process returned by exec_command. Omit chars or pass an empty string to poll. Pass \\u0003 to send Ctrl-C.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string",
+          "description": "Workspace identifier used to start the process."
+        },
+        "sessionId": {
+          "type": "number",
+          "description": "Process session identifier returned by exec_command."
+        },
+        "chars": {
+          "description": "Characters to write. Omit or pass an empty string to poll.",
+          "type": "string"
+        },
+        "columns": {
+          "description": "Resize a PTY to this width.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "rows": {
+          "description": "Resize a PTY to this height.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "waitTimeMs": {
+          "description": "Milliseconds to wait for process output or completion. Defaults to 10000.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000
+        },
+        "yieldTimeMs": {
+          "description": "Milliseconds to wait for process output or completion. Defaults to 10000.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 30000
+        },
+        "maxOutputTokens": {
+          "description": "Approximate output token budget. Defaults to 10000.",
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "maximum": 100000
+        }
+      },
+      "required": [
+        "workspaceId",
+        "sessionId"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "string",
+          "description": "Model-readable result text for follow-up reasoning and plain MCP hosts."
+        },
+        "sessionId": {
+          "type": "number"
+        },
+        "running": {
+          "type": "boolean"
+        },
+        "exitCode": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "signal": {
+          "type": "string"
+        },
+        "wallTimeMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "outputTruncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "result",
+        "running",
+        "wallTimeMs",
+        "outputTruncated"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": false,
+      "destructiveHint": true,
+      "idempotentHint": false,
+      "openWorldHint": true
+    }
+  },
+  {
+    "name": "codegraph_explore",
+    "description": "Explore current source and call relationships before editing. Uses the opened workspace. Optional extension failures do not affect core tools.",
+    "inputSchema": {
+      "type": "object",
+      "properties": {
+        "workspaceId": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string",
+          "minLength": 1
+        },
+        "maxFiles": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      },
+      "required": [
+        "workspaceId",
+        "query"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#"
+    },
+    "outputSchema": {
+      "type": "object",
+      "properties": {
+        "result": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": false
+    },
+    "annotations": {
+      "readOnlyHint": true,
+      "destructiveHint": false,
+      "idempotentHint": true,
+      "openWorldHint": false
+    }
+  }
+]

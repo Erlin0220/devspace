@@ -1,0 +1,20 @@
+[
+  {
+    "id": "macmini",
+    "name": "Mac mini",
+    "platform": "darwin",
+    "bindingId": "",
+    "runtimeOwner": "",
+    "endpoint": "https://macmini.example.invalid/mcp",
+    "apiToken": ""
+  },
+  {
+    "id": "lecoo",
+    "name": "Lecoo",
+    "platform": "windows",
+    "bindingId": "",
+    "runtimeOwner": "",
+    "endpoint": "https://lecoo.example.invalid/mcp",
+    "apiToken": ""
+  }
+]
