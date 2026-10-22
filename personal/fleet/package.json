@@ -8,11 +8,15 @@
     "build": "wrangler deploy --dry-run --outdir .build",
     "test": "node --test test/*.test.mjs",
     "test:worker": "npm run build && node --test test/worker.integration.mjs",
-    "test:runtime": "node --test test/runtime.integration.mjs"
+    "test:runtime": "node --test test/runtime.integration.mjs",
+    "test:oauth": "npm run build && node --test test/oauth.integration.mjs"
   },
   "devDependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "miniflare": "4.20260730.0",
     "wrangler": "4.151.3"
+  },
+  "dependencies": {
+    "@cloudflare/workers-oauth-provider": "1.2.3"
   }
 }

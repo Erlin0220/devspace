@@ -57,28 +57,32 @@ capacity is reserved before opening a workspace or dispatching a command.
 
 ## Cloudflare target and binding configuration
 
-The selected connector is **Primary**, verified read-only on 2026-10-22:
+Deployed through the **Primary** connector on 2026-10-22:
 
 - Account: `4498bbe09d0c6dc868f53aff6391ca6e`.
 - Active zone: `568920429.xyz`.
 - Independent Worker: `personal-devspace-fleet`.
 - Durable Object binding/class: `FLEET` / `PersonalFleet`, SQLite migration `v1`.
-- Prepared custom domain: `personal-devspace-fleet.568920429.xyz`.
+- MCP endpoint: `https://personal-devspace-fleet.568920429.xyz/mcp`.
+- OAuth KV binding: `OAUTH_KV`, separate from both Runtime databases.
 
-The target is recorded in `wrangler.jsonc`. This development step does not create
-cloud resources or DNS records. At deployment, re-check the exact hostname for
-existing records; never replace a different service. The gateway has its own
-secrets and Durable Object namespace and never reuses Team or Windows MCP state.
+The target is recorded in `wrangler.jsonc`; public deployment identities are in
+`deployment.json`. The gateway has its own secrets, KV and Durable Object namespace
+and never reuses Team or Windows MCP state. For another deployment, choose its
+own resources and review `FLEET_ORIGIN` in `oauth.mjs` before publishing.
 
-Two Cloudflare secrets are required:
+Three Cloudflare secrets are required:
 
 - `FLEET_CLIENT_TOKEN`: a new private bearer token, at least 32 printable non-space
-  characters, used by the single host/plugin connection.
+  characters, retained as a private operator credential for deployment probes.
 - `FLEET_DEVICE_BINDINGS`: a private JSON array following `devices.example.json`.
   Each device needs a unique id, binding id, HTTPS `/mcp` endpoint and API token.
   `runtimeOwner` is the exact 20-character owner from that endpoint's
   `/personal-healthz`; it is checked before tools are dispatched. This is local
   installation ownership, not a hardware attestation.
+- `FLEET_OAUTH_OWNER_HASH`: SHA-256 of the single owner's private authorization
+  code. The code itself stays in `~/.personal-fleet-network/owner.json`, outside
+  this repository; it is never a Worker binding or a URL parameter.
 
 Generate each binding id once from random bytes and preserve it when reconnecting
 the same installation. Device and Fleet credentials must differ. A token rotation
@@ -86,6 +90,50 @@ or endpoint/owner replacement deliberately requires new workspace handles. Bind
 only user-controlled, independently authenticated Runtime endpoints. The Gateway
 does not create or reconfigure tunnels, expand allowed roots, install agents, or
 change Lecoo's running instance.
+
+## ChatGPT OAuth connection
+
+The single private cloud plugin is recorded in `plugin/cloud-connection.json`.
+ChatGPT web uses OAuth discovery and dynamic client registration, the `devspace`
+scope and PKCE S256. Registration accepts only the exact ChatGPT connector callback
+`https://chatgpt.com/connector_platform_oauth_redirect`. The owner approves each
+connection on the Gateway's own authorization page using the private owner code.
+The page describes both devices and shell authority before approval. Browser-bound,
+expiring consent prevents CSRF and replay; access tokens expire after one hour and
+refresh tokens after 30 days. Registration and owner-code attempts are rate limited.
+OAuth tokens are validated at the Gateway and never replace device credentials.
+
+`@cloudflare/workers-oauth-provider` supplies protocol state, discovery, PKCE,
+token issuance, refresh rotation and revocation. The overlay supplies single-owner
+consent and device routing. The private operator key is for SDK probes; it is not
+the ChatGPT web connection method. Existing DevSpace connections remain separate.
+
+## Explicit network deployment helpers
+
+These scripts are operator commands, never Runtime/Worker lifecycle hooks:
+
+- `seal-device-binding.mjs` reads the owning device's existing Runtime identity and
+  credential, preserves its private binding identity and emits an encrypted envelope
+  for a chosen RSA recipient. It rejects changes to an existing binding.
+- `create-client-auth.mjs` preserves a private operator credential and emits only an
+  encrypted envelope. `create-owner-code.mjs` does the same for the owner code,
+  returning its server-side hash. `--rotate` explicitly replaces the owner code;
+  update `FLEET_OAUTH_OWNER_HASH` to invalidate the previous code. Existing OAuth
+  grants must be revoked separately when required.
+- `install-network-service.mjs --device <id> --cloudflared <absolute-executable>
+  --token-file <absolute-private-file>` installs a new user-owned tunnel service.
+  Keep its token under `~/.personal-fleet-network/<id>/`. macOS uses a LaunchAgent;
+  Windows uses a hidden, current-user scheduled task. Existing service files/tasks
+  are refused. Windows private directories must have a current-user-only ACL.
+- `prepare-upload.mjs --output <private-review-file.json>` prepares an upgrade
+  payload for the Cloudflare connector from the tested `.build/worker.js`. It hashes
+  the bundle, preserves existing secret bindings and does not deploy by itself.
+  Initial DO migration and resource creation are separate explicit operations.
+
+Dedicated tunnels expose only `/mcp` and `/personal-healthz`, with the loopback Host
+header expected by the Runtime. Other paths return 404. Their tokens and service
+receipts stay in each device's private network directory. Tunnel ownership remains
+with the user; old tunnels and Runtime services are unchanged.
 
 Put actual values only in Cloudflare secrets or the ignored local `.dev.vars`.
 The committed examples intentionally fail validation. The local Node test adapter
@@ -102,6 +150,7 @@ npm test
 npm run build
 npm run test:worker
 npm run test:runtime
+npm run test:oauth
 ```
 
 `build` is a Wrangler dry run. It produces `.build/worker.js` without publishing a
@@ -117,15 +166,23 @@ files, concurrent commands, process polling, allowed-root rejection and one
 offline backend. Both fixtures run on the current OS. This is not a claim of
 physical Windows/Mac dual-machine or ChatGPT connector acceptance.
 
+`test:oauth` runs the actual OAuth provider inside workerd with KV and a Durable
+Object: discovery, callback restrictions, browser consent, PKCE, code replay,
+refresh rotation, resource binding and authenticated MCP initialization.
+
 For a local manual run, privately fill `.dev.vars` from the example, then use
 `npm run dev`. No permanent service should be launched from an MCP command tree.
 
-## Third-step acceptance
+## Physical-device acceptance
 
-After deploying the prepared resources with the selected Cloudflare connection,
-bind the independently reachable Mac/Lecoo endpoints and configure one ChatGPT
-plugin/connector with the Fleet `/mcp` endpoint and Fleet credential. Verify on
-the actual devices: concurrent commands, host reconnect, gateway restart, one
-device offline, binding replacement rejection and no cross-machine migration.
-Cloudflare publication, physical-device binding and ChatGPT integration remain
-separate from the local development checks above.
+`live-acceptance.mjs --phase start|resume|offline|recovered --state <private-file>`
+uses the public Gateway and the private operator credential. Start opens the actual
+Mac and Lecoo projects and launches concurrent native commands. Resume polls their
+original opaque handles after reconnect/redeploy. Offline expects the Mac route to
+fail closed while Lecoo still executes. Recovered verifies the original workspaces.
+The operator controls only the new dedicated tunnel between phases; the test never
+stops services itself. All four phases passed on the physical devices on 2026-10-22.
+
+ChatGPT OAuth authorization was completed through Lecoo's GPT日本 browser. Host
+acceptance is recorded separately in `deployment.json`; local fixture tests are
+not evidence of real ChatGPT tool execution.

@@ -1,0 +1,13 @@
+{
+  "pluginId": "plugin_asdk_app_6ad9c50be2e081918d5865467b6ff160",
+  "appId": "asdk_app_6ad9c50be2e081918d5865467b6ff160",
+  "releaseId": "PluginRelease_b021b0cc08fc81918924c2f9f42a3c1f",
+  "scope": "USER",
+  "visibility": "PRIVATE",
+  "url": "https://chatgpt.com/plugins/plugin_asdk_app_6ad9c50be2e081918d5865467b6ff160",
+  "mcpUrl": "https://personal-devspace-fleet.568920429.xyz/mcp",
+  "authentication": "oauth",
+  "scopes": ["devspace"],
+  "registration": "dynamic",
+  "redirectUri": "https://chatgpt.com/connector_platform_oauth_redirect"
+}

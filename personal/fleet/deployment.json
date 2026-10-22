@@ -1,0 +1,53 @@
+{
+  "date": "2026-10-22",
+  "connection": "Primary",
+  "accountId": "4498bbe09d0c6dc868f53aff6391ca6e",
+  "zoneId": "bf4ccf0e78ad302ab96df11d218ac8dd",
+  "worker": "personal-devspace-fleet",
+  "mcpUrl": "https://personal-devspace-fleet.568920429.xyz/mcp",
+  "bundleSha256": "2aacb2d43f4f5d322c59e96957881c8f9fd5487517dbc7f77b33712f1d09cd4e",
+  "durableObject": { "binding": "FLEET", "className": "PersonalFleet", "migration": "v1", "sqlite": true },
+  "oauthKv": { "binding": "OAUTH_KV", "namespaceId": "0120907f9f7842498e454d7fd15abeb2" },
+  "devices": [
+    {
+      "id": "macmini",
+      "platform": "darwin",
+      "runtimeVersion": "1.0.8",
+      "hostname": "personal-macmini.568920429.xyz",
+      "tunnelId": "9ff5db24-a5a7-4f45-9b42-453a6b1f139b",
+      "origin": "http://127.0.0.1:56069",
+      "service": "com.personal-fleet.macmini.tunnel"
+    },
+    {
+      "id": "lecoo",
+      "platform": "windows",
+      "runtimeVersion": "1.0.8",
+      "hostname": "personal-lecoo.568920429.xyz",
+      "tunnelId": "e4e888f2-c4a8-43af-8f25-07d04eb169f4",
+      "origin": "http://127.0.0.1:7676",
+      "service": "PersonalFleet-lecoo-Tunnel"
+    }
+  ],
+  "ingressPaths": ["/mcp", "/personal-healthz"],
+  "physicalAcceptance": {
+    "client": "MCP SDK through public Gateway",
+    "concurrentNativeCommands": "passed",
+    "hostReconnectAndGatewayRedeploy": "passed with original process handles",
+    "macOfflineIsolation": "passed; Mac read rejected, Lecoo command succeeded",
+    "recovery": "passed with original workspace handles"
+  },
+  "chatgptAcceptance": {
+    "browser": "Lecoo GPT日本",
+    "pluginReference": "plugin/cloud-connection.json",
+    "conversationUrl": "https://chatgpt.com/c/6ad9caba-3208-83ee-9ba8-345657b5e520",
+    "oauth": "authorized",
+    "deviceDiscovery": "both online",
+    "openWorkspace": "both specified checkouts opened",
+    "command": "node -p process.platform",
+    "results": { "macmini": { "stdout": "darwin", "exitCode": 0 }, "lecoo": { "stdout": "win32", "exitCode": 0 } },
+    "verification": "observed rendered ChatGPT result after one-time command approval"
+  },
+  "discardedDesktopDraft": { "pluginId": "Plugin_08f2cbbed92481918a02199b95f8b7f9", "status": "deleted; metadata lookup returns NOT_FOUND" },
+  "existingRuntimeAndTunnelServices": "preserved",
+  "credentials": "stored outside the repository; no credentials or owner-code hash in this receipt"
+}

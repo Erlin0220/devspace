@@ -1,4 +1,6 @@
 # Local-only configuration. Copy to .dev.vars and fill privately.
-# Both values intentionally fail validation until configured.
+# Values intentionally fail validation until configured.
 FLEET_CLIENT_TOKEN=""
 FLEET_DEVICE_BINDINGS="[]"
+# SHA-256 of the private owner code; never put the code itself here.
+FLEET_OAUTH_OWNER_HASH=""
