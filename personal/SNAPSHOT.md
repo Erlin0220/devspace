@@ -12,6 +12,7 @@ commit `15ce088b890142eb7922c156e01aa637b700cb24`.
 | `platform/windows/tds-launcher.c` | Independent Personal GUI launcher, owned Job Object and optional log sink |
 | `native/tray/src/main.rs`, `Cargo.toml` | Independent Personal tray, native event loop and JSON protocol |
 | `native/macos/TeamDevSpaceUI.swift` | Tray-only AppKit frontend; enrollment forms removed |
+| `platform/macos/team-devspace-template.png` | Unmodified macOS menu-bar template image at `personal/assets/macos-tray-template.png`; SHA-256 `cd6b8a3ceef895d6e41c5af8e41e308c3072c764e4d1bbbf3b0a7826acb97b62` |
 | `native/tray/zig-as.c` | Standalone build-time assembler adapter |
 
 No Team executable, installed path, shared state, updater endpoint, gateway,
