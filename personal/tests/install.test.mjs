@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { execFile } from 'node:child_process';
-import { access, mkdtemp, mkdir, rm, readFile, utimes, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, realpath, rm, readFile, symlink, utimes, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
@@ -250,8 +250,11 @@ test('GC removes only old Personal-owned review worktrees and keeps the current 
   await atomicJson(join(oldReview, '.personal-review/candidate.json'), { schema: 1, owner: 'personal-devspace', branch: 'personal/upgrade-old' });
   await atomicJson(join(currentReview, '.personal-review/candidate.json'), { schema: 1, owner: 'personal-devspace', branch: 'personal/upgrade-current' });
   await atomicJson(join(home, 'personal.json'), { schema: 1, sourceRoot: source });
-  await atomicJson(join(home, 'upgrade-review.json'), { schema: 1, status: 'tested-awaiting-review', candidate: currentReview, candidateHead: 'a'.repeat(40) });
+  const alias = join(root, 'review-alias');
+  await symlink(await realpath(root), alias, process.platform === 'win32' ? 'junction' : 'dir');
+  await atomicJson(join(home, 'upgrade-review.json'), { schema: 1, status: 'tested-awaiting-review', candidate: join(alias, 'DevSpace-review-current'), candidateHead: 'a'.repeat(40) });
+  const canonicalOld = await realpath(oldReview);
   const result = await collectGarbage(home);
-  assert.ok(result.actions.some(action => action.kind === 'old-review-worktree' && resolve(action.path) === resolve(oldReview)));
+  assert.ok(result.actions.some(action => action.kind === 'old-review-worktree' && resolve(action.path) === canonicalOld));
   await assert.rejects(access(oldReview)); await access(currentReview);
 });

@@ -55,6 +55,13 @@ function managedEnvironment(home, component, codexCommand) {
   ];
 }
 
+export function launchAgentEnvironment(home, component, { codexCommand, node = process.execPath, path = process.env.PATH ?? '/usr/bin:/bin:/usr/sbin:/sbin' } = {}) {
+  // launchd does not inherit the invoking shell's PATH. Pin Node's directory so
+  // npm and its env-node shebang use the same runtime, including NVM installs.
+  const directories = [...new Set([dirname(node), ...path.split(':')].filter(Boolean))];
+  return [...managedEnvironment(home, component, codexCommand), ['PATH', directories.join(':')]];
+}
+
 async function native(command, args) {
   return exec(command, args, { windowsHide: true, timeout: 30000, maxBuffer: 1024 * 1024 });
 }
@@ -191,7 +198,7 @@ export async function registerJobs(home, root, selected = components, { record =
       const previous = await readFile(path, 'utf8').catch(error => { if (error.code === 'ENOENT') return ''; throw error; });
       if (previous && !previous.includes(`PersonalDevSpace:${ownerId(home)}`)) throw new Error('Unknown LaunchAgent owner');
       const args = [process.execPath, join(root, 'personal', 'bin.mjs'), component];
-      const environment = managedEnvironment(home, component, codexCommand).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('');
+      const environment = launchAgentEnvironment(home, component, { codexCommand }).map(([key, value]) => `<key>${xml(key)}</key><string>${xml(value)}</string>`).join('');
       const contents = `<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><!-- PersonalDevSpace:${ownerId(home)} --><key>Label</key><string>${label}</string><key>ProgramArguments</key><array>${args.map(arg => `<string>${xml(arg)}</string>`).join('')}</array><key>WorkingDirectory</key><string>${xml(root)}</string><key>EnvironmentVariables</key><dict>${environment}</dict><key>RunAtLoad</key><${component === 'installer' ? 'false' : 'true'}/><key>ProcessType</key><string>Interactive</string><key>StandardOutPath</key><string>${xml(join(home, 'logs', `${component}.log`))}</string><key>StandardErrorPath</key><string>${xml(join(home, 'logs', `${component}.error.log`))}</string></dict></plist>\n`;
       plans.push({ path, previous, contents });
     }
@@ -255,8 +262,27 @@ export async function jobAction(home, component, action) {
     const path = join(homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
     const contents = await readFile(path, 'utf8'); if (!contents.includes(`PersonalDevSpace:${ownerId(home)}`)) throw new Error('Unknown LaunchAgent owner');
     const loaded = await native('/bin/launchctl', ['print', `${domain}/${label}`]).then(() => true, () => false);
-    if (action === 'start') { if (!loaded) await native('/bin/launchctl', ['bootstrap', domain, path]); if (loaded || component === 'installer') await native('/bin/launchctl', ['kickstart', `${domain}/${label}`]); }
-    else { if (loaded) await native('/bin/launchctl', ['bootout', `${domain}/${label}`]); if (action === 'remove') await rm(path); }
+    if (action === 'start') {
+      if (!loaded) await native('/bin/launchctl', ['bootstrap', domain, path]);
+      // An explicit start must not depend on RunAtLoad scheduling, especially
+      // when a Runtime was just unloaded and immediately registered again.
+      await native('/bin/launchctl', ['kickstart', `${domain}/${label}`]);
+    }
+    else {
+      if (loaded) {
+        await native('/bin/launchctl', ['bootout', `${domain}/${label}`]);
+        // bootout can return while launchd still exposes the terminating job.
+        // Do not let a subsequent start mistake it for a loaded new instance.
+        for (let attempt = 0; ; attempt++) {
+          const absent = await native('/bin/launchctl', ['print', `${domain}/${label}`])
+            .then(() => false, error => { if ([3, 113].includes(error.code)) return true; throw error; });
+          if (absent) break;
+          if (attempt >= 59) throw new Error(`${component} owner did not unload`);
+          await sleep(100);
+        }
+      }
+      if (action === 'remove') await rm(path);
+    }
     return;
   }
   const unit = `${jobName(home, component)}.service`;

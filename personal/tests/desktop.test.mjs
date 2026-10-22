@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createServer, request as httpRequest } from 'node:http';
 import { execFile } from 'node:child_process';
-import { access, chmod, mkdir, mkdtemp, rm, readFile, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, realpath, rm, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -11,7 +11,7 @@ import { startLocalControl, bindPort } from '../desktop/local-control.mjs';
 import { atomicJson } from '../state.mjs';
 import { bindPersonalSourceRoot, runtimeEnvironment, readPersonalConfig } from '../config.mjs';
 import { operations } from '../desktop/main.mjs';
-import { discoverCodexCommand, taskXml, ownerId } from '../desktop/platform.mjs';
+import { discoverCodexCommand, launchAgentEnvironment, taskXml, ownerId } from '../desktop/platform.mjs';
 import { runtimeSnapshot, waitForRuntime } from '../runtime.mjs';
 
 const deferred = () => { let resolve; const promise = new Promise(r => { resolve = r; }); return { promise, resolve }; };
@@ -84,17 +84,19 @@ test('Personal sourceRoot binding is explicit and update prepare fails clearly w
   await writeFile(join(source, 'package.json'), JSON.stringify({ name: '@waishnav/devspace' }));
   await writeFile(join(source, 'personal', 'upstream.json'), '{}');
   await exec('git', ['init', '--quiet'], { cwd: source, windowsHide: true });
-  await atomicJson(join(home, 'personal.json'), { schema: 1, projectRoot: home, futureSetting: 'preserve' });
+  await atomicJson(join(home, 'personal.json'), { schema: 1, projectRoot: home, runtimeConfigDir: home, futureSetting: 'preserve' });
+  await atomicJson(join(home, 'auth.json'), { ownerToken: 'personal-source-fixture-owner-not-real' });
   await atomicJson(join(home, 'intent.json'), { paused: false });
   await assert.rejects(
     operations(home)['update-prepare']({ onProgress: () => {} }),
     /未配置 Personal 源码目录/,
   );
-  assert.equal(await bindPersonalSourceRoot(home, source), source);
+  const canonicalSource = await realpath(source);
+  assert.equal(await bindPersonalSourceRoot(home, source), canonicalSource);
   const stored = JSON.parse(await readFile(join(home, 'personal.json'), 'utf8'));
-  assert.equal(stored.sourceRoot, source);
+  assert.equal(stored.sourceRoot, canonicalSource);
   assert.equal(stored.futureSetting, 'preserve');
-  assert.equal((await operations(home).status()).sourceRoot, source);
+  assert.equal((await operations(home).status()).sourceRoot, canonicalSource);
   await assert.rejects(bindPersonalSourceRoot(home, home), /Personal DevSpace Git checkout/);
 });
 test('native task identity is independent of API tokens and uses current-user GUI launcher ownership', () => {
@@ -116,6 +118,17 @@ test('managed runtime discovers an absolute Codex command without hardcoding mac
   assert.equal(resolved, command);
   assert.equal(await discoverCodexCommand({ PATH: [directory, join(directory, 'missing')].join(delimiter) }, process.platform, join(directory, 'elsewhere', 'node')), command);
   assert.equal(await discoverCodexCommand({ PATH: join(directory, 'missing') }, process.platform, join(directory, 'elsewhere', 'node')), undefined);
+});
+test('macOS launch agents pin Node and npm on PATH without inheriting an API token', () => {
+  for (const component of ['installer', 'runtime', 'desktop']) {
+    const environment = Object.fromEntries(launchAgentEnvironment('/private/personal', component, {
+      node: '/opt/nvm/node/bin/node', path: '/usr/bin:/bin:/opt/nvm/node/bin', codexCommand: '/opt/bin/codex',
+    }));
+    assert.equal(environment.PATH, '/opt/nvm/node/bin:/usr/bin:/bin');
+    assert.equal(environment.PERSONAL_DEVSPACE_HOME, '/private/personal');
+    assert.equal(environment.DEVSPACE_API_TOKEN, '');
+    assert.equal(environment.CODEX_COMMAND, component === 'runtime' ? '/opt/bin/codex' : undefined);
+  }
 });
 test('Control Center uses the Personal logo and keeps manual status checks out of transient banners', async () => {
   const [html, script] = await Promise.all([

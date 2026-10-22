@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { readdir, rm, stat } from 'node:fs/promises';
+import { readdir, realpath, rm, stat } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { installerRunning } from './desktop/platform.mjs';
@@ -7,6 +7,11 @@ import { readJson, stateHome, statePath } from './state.mjs';
 
 const LOG_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const exec = promisify(execFile);
+
+async function pathIdentity(path) {
+  try { return await realpath(path); }
+  catch (error) { if (error.code === 'ENOENT') return resolve(path); throw error; }
+}
 
 async function entries(path) {
   return readdir(path, { withFileTypes: true }).catch(error => {
@@ -29,7 +34,7 @@ export async function collectGarbage(home = stateHome(), { dryRun = false, now =
   const attempt = await readJson(statePath(home, 'installAttempt'), null);
   const personal = await readJson(statePath(home, 'personal'), null);
   const review = await readJson(statePath(home, 'upgradeReview'), null);
-  const keepApps = new Set([installation?.packageRoot, attempt?.previous].filter(Boolean).map(path => resolve(path)));
+  const keepApps = new Set(await Promise.all([installation?.packageRoot, attempt?.previous].filter(Boolean).map(pathIdentity)));
   const apps = join(home, 'apps');
   for (const entry of await entries(apps)) {
     if (!entry.isDirectory()) continue;
@@ -38,7 +43,7 @@ export async function collectGarbage(home = stateHome(), { dryRun = false, now =
       await remove('stale-stage', path);
       continue;
     }
-    if (keepApps.has(resolve(path))) continue;
+    if (keepApps.has(await pathIdentity(path))) continue;
     const receipt = await readJson(join(path, '.personal-install.json'), null).catch(() => null);
     if (receipt?.owner === 'personal-devspace') await remove('old-install', path);
   }
@@ -77,12 +82,13 @@ export async function collectGarbage(home = stateHome(), { dryRun = false, now =
 
   const sourceRoot = personal?.sourceRoot;
   if (typeof sourceRoot === 'string') {
+    const keepWorktrees = new Set(await Promise.all([sourceRoot, review?.candidate ?? sourceRoot].map(pathIdentity)));
     const listing = await exec('git', ['worktree', 'list', '--porcelain'], {
       cwd: sourceRoot, windowsHide: true, timeout: 30_000, maxBuffer: 1024 * 1024,
     }).then(result => result.stdout, () => '');
     const worktrees = listing.split(/\r?\n/).flatMap(line => line.startsWith('worktree ') ? [line.slice(9)] : []);
     for (const worktree of worktrees) {
-      if (resolve(worktree) === resolve(sourceRoot) || resolve(worktree) === resolve(review?.candidate ?? sourceRoot)) continue;
+      if (keepWorktrees.has(await pathIdentity(worktree))) continue;
       if (!basename(worktree).startsWith('DevSpace-review-')) continue;
       const manifest = await readJson(join(worktree, '.personal-review', 'candidate.json'), null).catch(() => null);
       if (manifest?.owner !== 'personal-devspace' || !/^personal\/upgrade-[A-Za-z0-9._-]+$/.test(manifest.branch ?? '')) continue;

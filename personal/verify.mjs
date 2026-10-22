@@ -65,6 +65,12 @@ export async function verifyCheckout(root = repositoryRoot, { onProgress = () =>
     }
     const promoted = await promoteVerificationOutputs(root, isolated.root, stages);
     return await recordCandidate(root, promoted, expected);
+  } catch (error) {
+    // Retain diagnostics before finally removes the disposable worktree.
+    const logs = join(root, '.personal-review', 'failed-verification');
+    try { await cp(join(isolated.root, '.personal-review'), logs, { recursive: true, force: true }); }
+    catch { throw error; }
+    throw new Error(`${error.message}; verification logs retained in ${logs}`, { cause: error });
   } finally {
     await isolated.cleanup();
   }
